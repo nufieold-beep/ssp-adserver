@@ -1,30 +1,165 @@
-
 package vast
 
 import (
 	"fmt"
+	"html"
+	"path"
 	"ssp/internal/openrtb"
+	"strings"
 )
 
-func Build(bid *openrtb.Bid) string {
+// BaseURL is set at startup to the server's publicly-reachable origin.
+// e.g., "http://localhost:8080" — router sets this on init.
+var BaseURL string
 
-	return fmt.Sprintf(`
+// AdmType classifies the content of a bid's Adm field.
+type AdmType int
+
+const (
+	AdmInline      AdmType = iota // Media file URL → <InLine> with <MediaFile>
+	AdmWrapper                    // VAST tag URL → <Wrapper> with <VASTAdTagURI>
+	AdmPassthrough                // Complete VAST XML → inject our tracking pixels
+)
+
+// DetectAdmType inspects the Adm content and returns the appropriate type.
+func DetectAdmType(adm string) AdmType {
+	trimmed := strings.TrimSpace(adm)
+	if trimmed == "" {
+		return AdmInline
+	}
+	// Full VAST XML document — passthrough
+	if strings.HasPrefix(trimmed, "<?xml") || strings.HasPrefix(trimmed, "<VAST") {
+		return AdmPassthrough
+	}
+	// URL — check if it's a direct media file or a VAST wrapper redirect
+	if strings.HasPrefix(trimmed, "http://") || strings.HasPrefix(trimmed, "https://") {
+		ext := strings.ToLower(path.Ext(strings.SplitN(trimmed, "?", 2)[0]))
+		switch ext {
+		case ".mp4", ".webm", ".ogg", ".m3u8", ".mpd", ".mov", ".3gp":
+			return AdmInline
+		}
+		return AdmWrapper
+	}
+	return AdmInline
+}
+
+// Build creates a VAST 3.0 XML response from a winning bid.
+// Auto-detects the Adm content type and generates InLine, Wrapper,
+// or passthrough VAST accordingly, always injecting SSP tracking pixels.
+func Build(bid *openrtb.Bid, requestID string) string {
+	switch DetectAdmType(bid.Adm) {
+	case AdmPassthrough:
+		return buildPassthrough(bid, requestID)
+	case AdmWrapper:
+		return buildWrapper(bid, requestID)
+	default:
+		return buildInline(bid, requestID)
+	}
+}
+
+// impressionBlock returns the SSP + DSP impression pixel XML fragment.
+func impressionBlock(evtBase, requestID string, bid *openrtb.Bid) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "   <Impression><![CDATA[%s/impression?rid=%s&bid=%s&price=%.6f]]></Impression>\n",
+		evtBase, requestID, bid.ID, bid.Price)
+	if bid.BURL != "" {
+		burl := bid.SubstituteMacros(bid.BURL)
+		fmt.Fprintf(&sb, "   <Impression><![CDATA[%s]]></Impression>\n", burl)
+	}
+	return sb.String()
+}
+
+// buildInline creates a self-contained VAST InLine ad from a media file URL.
+func buildInline(bid *openrtb.Bid, requestID string) string {
+	evtBase := fmt.Sprintf("%s/api/v1/event", BaseURL)
+	impressions := impressionBlock(evtBase, requestID, bid)
+
+	w, h := bid.W, bid.H
+	if w == 0 {
+		w = 1920
+	}
+	if h == 0 {
+		h = 1080
+	}
+
+	bidID := html.EscapeString(bid.ID)
+	crID := html.EscapeString(bid.CrID)
+
+	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <VAST version="3.0">
  <Ad id="%s">
   <InLine>
-   <Creatives>
-    <Creative>
+   <AdSystem>viadsmedia SSP</AdSystem>
+   <AdTitle>Ad %s</AdTitle>
+%s   <Creatives>
+    <Creative id="%s">
      <Linear>
+      <Duration>00:00:30</Duration>
       <MediaFiles>
-        <MediaFile type="video/mp4">
-        %s
-        </MediaFile>
+       <MediaFile type="video/mp4" width="%d" height="%d" delivery="progressive" bitrate="2000"><![CDATA[%s]]></MediaFile>
       </MediaFiles>
      </Linear>
     </Creative>
    </Creatives>
   </InLine>
  </Ad>
-</VAST>
-`, bid.ID, bid.Adm)
+</VAST>`, bidID, bidID, impressions, crID, w, h, strings.TrimSpace(bid.Adm))
+}
+
+// buildWrapper creates a VAST Wrapper that redirects to the DSP's VAST tag URL.
+// SSP tracking and impression pixels are injected so they fire alongside the
+// downstream ad's own events.
+func buildWrapper(bid *openrtb.Bid, requestID string) string {
+	evtBase := fmt.Sprintf("%s/api/v1/event", BaseURL)
+	impressions := impressionBlock(evtBase, requestID, bid)
+	bidID := html.EscapeString(bid.ID)
+
+	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<VAST version="3.0">
+ <Ad id="%s">
+  <Wrapper>
+   <AdSystem>viadsmedia SSP</AdSystem>
+%s   <VASTAdTagURI><![CDATA[%s]]></VASTAdTagURI>
+   <Creatives/>
+  </Wrapper>
+ </Ad>
+</VAST>`, bidID, impressions, strings.TrimSpace(bid.Adm))
+}
+
+// buildPassthrough takes a complete VAST XML document from the DSP and
+// injects SSP impression + tracking pixels into it.
+func buildPassthrough(bid *openrtb.Bid, requestID string) string {
+	xml := html.UnescapeString(strings.TrimSpace(bid.Adm))
+	evtBase := fmt.Sprintf("%s/api/v1/event", BaseURL)
+	impressions := impressionBlock(evtBase, requestID, bid)
+
+	// Inject impression pixels after the first <Impression> block or after <InLine>/<Wrapper>
+	injected := false
+	for _, anchor := range []string{"</Impression>", "<Creatives>", "<InLine>", "<Wrapper>"} {
+		idx := strings.Index(xml, anchor)
+		if idx >= 0 {
+			insertAt := idx + len(anchor)
+			xml = xml[:insertAt] + "\n" + impressions + xml[insertAt:]
+			injected = true
+			break
+		}
+	}
+	if !injected {
+		// Fallback: insert after first <Ad...> tag
+		if adIdx := strings.Index(xml, ">"); adIdx >= 0 {
+			adEnd := strings.Index(xml[adIdx:], ">")
+			if adEnd >= 0 {
+				pos := adIdx + adEnd + 1
+				xml = xml[:pos] + "\n" + impressions + xml[pos:]
+			}
+		}
+	}
+
+	return xml
+}
+
+// BuildNoAd returns an empty VAST response (no ad available).
+func BuildNoAd() string {
+	return `<?xml version="1.0" encoding="UTF-8"?>
+<VAST version="3.0"/>`
 }

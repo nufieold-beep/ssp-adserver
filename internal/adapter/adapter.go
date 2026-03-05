@@ -1,0 +1,307 @@
+package adapter
+
+import (
+	"context"
+	"ssp/internal/openrtb"
+	"sync"
+	"sync/atomic"
+	"time"
+)
+
+// DemandAdapter is the unified interface for all demand sources.
+// Magnite, FreeWheel, and Prebid Server all use this pattern: every demand
+// partner (DSP, ad network, VAST tag, header bidder) implements one interface
+// so the auction engine treats them identically.
+type DemandAdapter interface {
+	// ID returns the unique adapter identifier.
+	ID() string
+	// Name returns the human-readable name.
+	Name() string
+	// Type returns "ortb", "vast", or "direct".
+	Type() AdapterType
+	// RequestBids sends a bid request and returns bids within the timeout.
+	RequestBids(ctx context.Context, req *openrtb.BidRequest) (*BidResult, error)
+	// Supports returns true if this adapter can handle the given request.
+	Supports(req *openrtb.BidRequest) bool
+}
+
+type AdapterType string
+
+const (
+	TypeORTB   AdapterType = "ortb"
+	TypeVAST   AdapterType = "vast"
+	TypeDirect AdapterType = "direct"
+)
+
+// BidResult contains bids from a single adapter plus metadata.
+type BidResult struct {
+	AdapterID string
+	Bids      []openrtb.Bid
+	Latency   time.Duration
+	NoBid     bool
+	Error     error
+}
+
+// AdapterConfig holds adapter-specific settings loaded from config.
+type AdapterConfig struct {
+	ID          string      `yaml:"id" json:"id"`
+	Name        string      `yaml:"name" json:"name"`
+	Type        AdapterType `yaml:"type" json:"type"`
+	Endpoint    string      `yaml:"endpoint" json:"endpoint"`
+	TimeoutMs   int         `yaml:"timeout_ms" json:"timeout_ms"`
+	Floor       float64     `yaml:"floor" json:"floor"`
+	Margin      float64     `yaml:"margin" json:"margin"`
+	QPSLimit    int         `yaml:"qps_limit" json:"qps_limit"` // 0 = unlimited
+	AuctionType string      `yaml:"auction_type" json:"auction_type"`
+	Status      int         `yaml:"status" json:"status"` // 1=active
+}
+
+// Registry manages all demand adapters with hot-reload capability.
+// This is the pattern Magnite uses: adapters can be added/removed/updated
+// at runtime without restarting the server.
+type Registry struct {
+	mu       sync.RWMutex
+	adapters map[string]DemandAdapter
+	configs  map[string]*AdapterConfig
+	qps      map[string]*qpsTracker
+}
+
+type qpsTracker struct {
+	limit   int
+	count   atomic.Int64
+	resetAt atomic.Int64 // unix second when count resets
+}
+
+func (q *qpsTracker) Allow() bool {
+	if q.limit <= 0 {
+		return true
+	}
+	now := time.Now().Unix()
+	if now > q.resetAt.Load() {
+		q.count.Store(0)
+		q.resetAt.Store(now)
+	}
+	return q.count.Add(1) <= int64(q.limit)
+}
+
+func NewRegistry() *Registry {
+	return &Registry{
+		adapters: make(map[string]DemandAdapter),
+		configs:  make(map[string]*AdapterConfig),
+		qps:      make(map[string]*qpsTracker),
+	}
+}
+
+// Register adds a demand adapter to the registry.
+func (r *Registry) Register(adapter DemandAdapter, cfg *AdapterConfig) {
+	r.mu.Lock()
+	r.adapters[cfg.ID] = adapter
+	r.configs[cfg.ID] = cfg
+	if cfg.QPSLimit > 0 {
+		r.qps[cfg.ID] = &qpsTracker{limit: cfg.QPSLimit}
+	}
+	r.mu.Unlock()
+}
+
+// Remove removes an adapter from the registry (hot-reload support).
+func (r *Registry) Remove(id string) {
+	r.mu.Lock()
+	delete(r.adapters, id)
+	delete(r.configs, id)
+	delete(r.qps, id)
+	r.mu.Unlock()
+}
+
+// GetActive returns all active adapters that support the given request.
+// Applies QPS throttling per adapter (GAM-style traffic shaping).
+func (r *Registry) GetActive(req *openrtb.BidRequest) []DemandAdapter {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var active []DemandAdapter
+	for id, adapter := range r.adapters {
+		cfg := r.configs[id]
+		if cfg.Status != 1 {
+			continue
+		}
+		if !adapter.Supports(req) {
+			continue
+		}
+		if tracker, ok := r.qps[id]; ok && !tracker.Allow() {
+			continue
+		}
+		active = append(active, adapter)
+	}
+	return active
+}
+
+// FanOut sends bid requests to all eligible adapters in parallel with timeout.
+// Uses channel-based collection with early-return: returns immediately when
+// TMax expires with whatever bids have arrived. This is how enterprise SSPs
+// (Magnite, Index Exchange) handle slow demand partners — never wait past TMax.
+func (r *Registry) FanOut(ctx context.Context, req *openrtb.BidRequest, tmax time.Duration) []*BidResult {
+	adapters := r.GetActive(req)
+	if len(adapters) == 0 {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, tmax)
+	defer cancel()
+
+	resultCh := make(chan *BidResult, len(adapters))
+
+	for _, adapter := range adapters {
+		go func(a DemandAdapter) {
+			start := time.Now()
+			result, err := a.RequestBids(ctx, req)
+			if err != nil {
+				resultCh <- &BidResult{AdapterID: a.ID(), Error: err, Latency: time.Since(start)}
+				return
+			}
+			if result == nil {
+				resultCh <- &BidResult{AdapterID: a.ID(), NoBid: true, Latency: time.Since(start)}
+				return
+			}
+			result.Latency = time.Since(start)
+			result.AdapterID = a.ID()
+			resultCh <- result
+		}(adapter)
+	}
+
+	// Collect results until all respond or TMax expires (early-return).
+	var out []*BidResult
+	remaining := len(adapters)
+	for remaining > 0 {
+		select {
+		case br := <-resultCh:
+			out = append(out, br)
+			remaining--
+		case <-ctx.Done():
+			// TMax expired — return collected bids, don't wait for slow partners
+			return out
+		}
+	}
+	return out
+}
+
+// FanOutTo sends bid requests to a specific set of adapters (by ID) in parallel.
+// Used when supply-demand mappings restrict which demand sources receive requests.
+func (r *Registry) FanOutTo(ctx context.Context, req *openrtb.BidRequest, tmax time.Duration, adapterIDs []string) []*BidResult {
+	r.mu.RLock()
+	var adapters []DemandAdapter
+	for _, id := range adapterIDs {
+		a, ok := r.adapters[id]
+		if !ok {
+			continue
+		}
+		cfg := r.configs[id]
+		if cfg != nil && cfg.Status != 1 {
+			continue
+		}
+		if !a.Supports(req) {
+			continue
+		}
+		if tracker, ok := r.qps[id]; ok && !tracker.Allow() {
+			continue
+		}
+		adapters = append(adapters, a)
+	}
+	r.mu.RUnlock()
+
+	if len(adapters) == 0 {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, tmax)
+	defer cancel()
+
+	resultCh := make(chan *BidResult, len(adapters))
+
+	for _, adapter := range adapters {
+		go func(a DemandAdapter) {
+			start := time.Now()
+			result, err := a.RequestBids(ctx, req)
+			if err != nil {
+				resultCh <- &BidResult{AdapterID: a.ID(), Error: err, Latency: time.Since(start)}
+				return
+			}
+			if result == nil {
+				resultCh <- &BidResult{AdapterID: a.ID(), NoBid: true, Latency: time.Since(start)}
+				return
+			}
+			result.Latency = time.Since(start)
+			result.AdapterID = a.ID()
+			resultCh <- result
+		}(adapter)
+	}
+
+	var out []*BidResult
+	remaining := len(adapters)
+	for remaining > 0 {
+		select {
+		case br := <-resultCh:
+			out = append(out, br)
+			remaining--
+		case <-ctx.Done():
+			return out
+		}
+	}
+	return out
+}
+
+// GetConfig returns the config for a specific adapter.
+func (r *Registry) GetConfig(id string) *AdapterConfig {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.configs[id]
+}
+
+// All returns all registered adapter IDs.
+func (r *Registry) All() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	ids := make([]string, 0, len(r.adapters))
+	for id := range r.adapters {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// Count returns the number of registered adapters.
+func (r *Registry) Count() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return len(r.adapters)
+}
+
+// AdapterInfo is a JSON-serialisable view of a registered adapter.
+type AdapterInfo struct {
+	ID       string      `json:"id"`
+	Name     string      `json:"name"`
+	Type     AdapterType `json:"type"`
+	Endpoint string      `json:"endpoint"`
+	Status   int         `json:"status"`
+	QPSLimit int         `json:"qps_limit"`
+}
+
+// List returns info about all registered adapters.
+func (r *Registry) List() []AdapterInfo {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]AdapterInfo, 0, len(r.adapters))
+	for id, a := range r.adapters {
+		cfg := r.configs[id]
+		info := AdapterInfo{
+			ID:   id,
+			Name: a.Name(),
+			Type: a.Type(),
+		}
+		if cfg != nil {
+			info.Endpoint = cfg.Endpoint
+			info.Status = cfg.Status
+			info.QPSLimit = cfg.QPSLimit
+		}
+		out = append(out, info)
+	}
+	return out
+}
