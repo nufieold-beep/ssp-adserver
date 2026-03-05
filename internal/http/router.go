@@ -181,6 +181,26 @@ func newStore() *store {
 	}
 }
 
+// lookupSupplyByTag checks whether a tag name/slot_id matches any registered supply source.
+// Returns the matching SupplyTag or nil if unknown.
+func (s *store) lookupSupplyByTag(tag string) *SupplyTag {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, t := range s.supplyTags {
+		if t.Status != 1 {
+			continue
+		}
+		if t.SlotID == tag || t.Name == tag {
+			return t
+		}
+		// Also match by ID string
+		if strconv.Itoa(t.ID) == tag {
+			return t
+		}
+	}
+	return nil
+}
+
 func (s *store) recordAdDecision(req *openrtb.BidRequest, winner *openrtb.Bid, winPrice float64, source, demandEp string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -324,6 +344,20 @@ func NewRouterWithDeps(cfg *config.Config, mgr *bidder.Manager, metrics *monitor
 
 func vastHandler(mgr *bidder.Manager, metrics *monitor.Metrics, s *store, auctionType string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
+		// Validate that the tag belongs to a registered supply source
+		tag := c.Params("tag")
+		if tag == "" {
+			tag = c.Query("tag")
+		}
+		if tag != "" {
+			if st := s.lookupSupplyByTag(tag); st == nil {
+				return c.Status(403).JSON(fiber.Map{"error": "Unknown supply source"})
+			}
+		} else {
+			// No tag provided — reject as unknown
+			return c.Status(403).JSON(fiber.Map{"error": "Unknown supply source"})
+		}
+
 		metrics.RecordAdRequest()
 		metrics.RecordAdOpp()
 
@@ -1333,41 +1367,41 @@ func generateVastTagURL(t *SupplyTag) string {
 
 func supplyTagVastHandler(p *pipeline.Pipeline, metrics *monitor.Metrics, s *store) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		// Look up supply tag by sid if present
+		// Look up supply tag by sid — reject unknown/missing sources
 		sidStr := c.Query("sid")
-		var tag *SupplyTag
-		var sid int
-		if sidStr != "" {
-			sid, _ = strconv.Atoi(sidStr)
-			s.mu.RLock()
-			tag = s.supplyTags[sid]
-			s.mu.RUnlock()
+		if sidStr == "" {
+			return c.Status(403).JSON(fiber.Map{"error": "Unknown supply source: missing sid"})
+		}
+		sid, _ := strconv.Atoi(sidStr)
+		s.mu.RLock()
+		tag := s.supplyTags[sid]
+		s.mu.RUnlock()
+		if tag == nil || tag.Status != 1 {
+			return c.Status(403).JSON(fiber.Map{"error": "Unknown supply source"})
 		}
 
 		req := openrtb.BuildFromHTTP(c)
 
 		// Enrich request with supply tag config (floor, dimensions, duration)
-		if tag != nil {
-			if tag.Floor > 0 && tag.Floor > req.Imp[0].BidFloor {
-				req.Imp[0].BidFloor = tag.Floor
-			}
-			if tag.Width > 0 && req.Imp[0].Video != nil {
-				req.Imp[0].Video.W = tag.Width
-				req.Device.W = tag.Width
-			}
-			if tag.Height > 0 && req.Imp[0].Video != nil {
-				req.Imp[0].Video.H = tag.Height
-				req.Device.H = tag.Height
-			}
-			if tag.MinDur > 0 && req.Imp[0].Video != nil {
-				req.Imp[0].Video.MinDuration = tag.MinDur
-			}
-			if tag.MaxDur > 0 && req.Imp[0].Video != nil {
-				req.Imp[0].Video.MaxDuration = tag.MaxDur
-			}
-			if tag.SlotID != "" {
-				req.Imp[0].TagID = tag.SlotID
-			}
+		if tag.Floor > 0 && tag.Floor > req.Imp[0].BidFloor {
+			req.Imp[0].BidFloor = tag.Floor
+		}
+		if tag.Width > 0 && req.Imp[0].Video != nil {
+			req.Imp[0].Video.W = tag.Width
+			req.Device.W = tag.Width
+		}
+		if tag.Height > 0 && req.Imp[0].Video != nil {
+			req.Imp[0].Video.H = tag.Height
+			req.Device.H = tag.Height
+		}
+		if tag.MinDur > 0 && req.Imp[0].Video != nil {
+			req.Imp[0].Video.MinDuration = tag.MinDur
+		}
+		if tag.MaxDur > 0 && req.Imp[0].Video != nil {
+			req.Imp[0].Video.MaxDuration = tag.MaxDur
+		}
+		if tag.SlotID != "" {
+			req.Imp[0].TagID = tag.SlotID
 		}
 
 		if err := validate.Request(&req); err != nil {
@@ -1421,6 +1455,20 @@ func supplyTagVastHandler(p *pipeline.Pipeline, metrics *monitor.Metrics, s *sto
 
 func pipelineHandler(p *pipeline.Pipeline, metrics *monitor.Metrics, s *store) fiber.Handler {
 	return func(c *fiber.Ctx) error {
+		// Validate that the tag belongs to a registered supply source
+		tag := c.Params("tag")
+		if tag == "" {
+			tag = c.Query("tag")
+		}
+		if tag != "" {
+			if st := s.lookupSupplyByTag(tag); st == nil {
+				return c.Status(403).JSON(fiber.Map{"error": "Unknown supply source"})
+			}
+		} else {
+			// No tag provided — reject as unknown
+			return c.Status(403).JSON(fiber.Map{"error": "Unknown supply source"})
+		}
+
 		req := openrtb.BuildFromHTTP(c)
 
 		if err := validate.Request(&req); err != nil {
