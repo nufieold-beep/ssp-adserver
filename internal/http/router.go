@@ -1025,7 +1025,8 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 		if t.Env == "STB" {
 			deviceType = "7"
 		}
-		baseURL := vast.BaseURL
+		// Use the request's own protocol+host so the URL matches the real domain
+		baseURL := c.BaseURL()
 		url := fmt.Sprintf("%s/api/vast?sid=%d&w=%d&h=%d&cb={cb}&ip={uip}&ua={ua}"+
 			"&app_bundle={app_bundle}&app_name={app_name}&app_store_url={app_store_url}"+
 			"&country_code=US&max_dur=%d&min_dur=%d"+
@@ -1356,13 +1357,14 @@ func generateVastTagURL(t *SupplyTag) string {
 	if lang == "" {
 		lang = "en"
 	}
-	return fmt.Sprintf("%s/api/vast?sid=%d&w=%d&h=%d&cb={cb}&ip={uip}&ua={ua}"+
+	// Use relative path — the full URL is resolved at serve time using the request host
+	return fmt.Sprintf("/api/vast?sid=%d&w=%d&h=%d&cb={cb}&ip={uip}&ua={ua}"+
 		"&app_bundle={app_bundle}&app_name={app_name}&app_store_url={app_store_url}"+
 		"&country_code=%s&max_dur=%d&min_dur=%d"+
 		"&device_make={device_make}&device_model={device_model}&device_type=%d"+
 		"&ct_genre=%s&ct_lang=%s&dnt=0&ifa={idfa}&os={device_os}"+
 		"&us_privacy=1---",
-		vast.BaseURL, t.ID, w, h, cc, maxDur, minDur, dt, genre, lang)
+		t.ID, w, h, cc, maxDur, minDur, dt, genre, lang)
 }
 
 func supplyTagVastHandler(p *pipeline.Pipeline, metrics *monitor.Metrics, s *store) fiber.Handler {
