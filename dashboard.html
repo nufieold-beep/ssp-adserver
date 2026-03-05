@@ -455,11 +455,18 @@ textarea{resize:vertical;min-height:68px}
     <div class="card">
       <div class="card-header"><h3>Local UI Settings</h3></div>
       <div class="card-body">
+        <div class="form-group" style="margin-bottom:14px">
+          <label>API Key</label>
+          <div style="display:flex;gap:8px">
+            <input id="apiKeyInput" type="password" value="" placeholder="Enter SSP_API_KEY" style="flex:1">
+            <button class="btn btn-secondary" onclick="saveLocalSettings()">Apply</button>
+          </div>
+          <small style="color:var(--fg3);margin-top:4px;font-size:11px">Required for admin API access. Stored in this browser only.</small>
+        </div>
         <div class="form-group">
           <label>API Base URL</label>
           <div style="display:flex;gap:8px">
             <input id="apiBaseInput" value="" placeholder="Leave empty for current origin" style="flex:1">
-            <button class="btn btn-secondary" onclick="saveLocalSettings()">Apply</button>
           </div>
           <small style="color:var(--fg3);margin-top:4px;font-size:11px">Changes only affect this browser session</small>
         </div>
@@ -727,6 +734,7 @@ textarea{resize:vertical;min-height:68px}
 // CONFIG
 // ═══════════════════════════════════════════
 let API_BASE = localStorage.getItem('viadsmedia_api_base') || window.location.origin;
+let API_KEY = localStorage.getItem('viadsmedia_api_key') || '';
 const SD = '/api/v1/supply-demand';
 const STATUS_MAP = {0:'Inactive',1:'Active',2:'Paused'};
 const STATUS_CLS = {0:'badge-inactive',1:'badge-active',2:'badge-paused'};
@@ -738,7 +746,8 @@ let inspectorAutoInterval = null;
 // ═══════════════════════════════════════════
 async function api(path, opts = {}) {
   const url = `${API_BASE}${path}`;
-  const cfg = {headers:{'Content-Type':'application/json',...opts.headers},...opts};
+  const authHeaders = API_KEY ? {'Content-Type':'application/json','Authorization':'Bearer '+API_KEY} : {'Content-Type':'application/json'};
+  const cfg = {headers:{...authHeaders,...opts.headers},...opts};
   if (opts.body && typeof opts.body === 'object') cfg.body = JSON.stringify(opts.body);
   try {
     const res = await fetch(url, cfg);
@@ -1244,6 +1253,7 @@ async function loadSettings() {
 
     renderSettingsServer(s);
     $('apiBaseInput').value=localStorage.getItem('viadsmedia_api_base')||'';
+    $('apiKeyInput').value=localStorage.getItem('viadsmedia_api_key')||'';
   } catch(e){}
 }
 
@@ -1299,7 +1309,11 @@ function saveLocalSettings() {
   const val=$v('apiBaseInput').trim();
   if(val){localStorage.setItem('viadsmedia_api_base',val);API_BASE=val;}
   else{localStorage.removeItem('viadsmedia_api_base');API_BASE=window.location.origin;}
-  toast('API base updated');
+  const key=$v('apiKeyInput').trim();
+  if(key){localStorage.setItem('viadsmedia_api_key',key);API_KEY=key;}
+  else{localStorage.removeItem('viadsmedia_api_key');API_KEY='';}
+  toast('Settings saved');
+  refreshCurrentPage();
 }
 
 // ═══════════════════════════════════════════
