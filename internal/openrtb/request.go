@@ -2,6 +2,9 @@ package openrtb
 
 import (
 	"strconv"
+	"strings"
+
+	"ssp/internal/geo"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
@@ -15,11 +18,11 @@ type BidRequest struct {
 	App     *App     `json:"app,omitempty"`
 	Site    *Site    `json:"site,omitempty"`
 	Device  Device   `json:"device"`
-	Regs    *Regs    `json:"regs,omitempty"`
 	User    *User    `json:"user,omitempty"`
+	Regs    *Regs    `json:"regs,omitempty"`
 	At      int      `json:"at,omitempty"`      // 1=first-price, 2=second-price
 	TMax    int      `json:"tmax,omitempty"`
-	AllImps int      `json:"allimps,omitempty"`
+	AllImps int      `json:"allimps"`
 	Cur     []string `json:"cur,omitempty"`
 	BAdv    []string `json:"badv,omitempty"`
 	BCat    []string `json:"bcat,omitempty"`
@@ -32,7 +35,7 @@ type Imp struct {
 	Instl       int     `json:"instl"`
 	BidFloor    float64 `json:"bidfloor"`
 	BidFloorCur string  `json:"bidfloorcur,omitempty"`
-	Secure      *int    `json:"secure,omitempty"`
+	Secure      int     `json:"secure"`
 	TagID       string  `json:"tagid,omitempty"`
 	Ext         *ImpExt `json:"ext,omitempty"`
 }
@@ -49,15 +52,15 @@ type Video struct {
 	Protocols      []int    `json:"protocols,omitempty"`
 	W              int      `json:"w"`
 	H              int      `json:"h"`
-	Skip           *int     `json:"skip,omitempty"`
+	Skip           int      `json:"skip"`
 	Sequence       int      `json:"sequence,omitempty"`
-	BoxingAllowed  *int     `json:"boxingallowed,omitempty"`
+	BoxingAllowed  int      `json:"boxingallowed"`
 	Placement      int      `json:"placement,omitempty"`
 	PlaybackMethod []int    `json:"playbackmethod,omitempty"`
-	StartDelay     *int     `json:"startdelay,omitempty"`
-	API            []int    `json:"api,omitempty"`
 	SkipMin        int      `json:"skipmin,omitempty"`
 	SkipAfter      int      `json:"skipafter,omitempty"`
+	StartDelay     *int     `json:"startdelay,omitempty"`
+	API            []int    `json:"api,omitempty"`
 	MaxExtended    int      `json:"maxextended,omitempty"`
 	Pos            int      `json:"pos,omitempty"`
 	CompanionAd    []Banner `json:"companionad,omitempty"`
@@ -99,7 +102,7 @@ type Geo struct {
 }
 
 type Device struct {
-	DNT            *int       `json:"dnt,omitempty"`
+	DNT            int        `json:"dnt"`
 	UA             string     `json:"ua"`
 	IP             string     `json:"ip"`
 	Geo            *Geo       `json:"geo,omitempty"`
@@ -108,13 +111,13 @@ type Device struct {
 	Model          string     `json:"model,omitempty"`
 	OS             string     `json:"os,omitempty"`
 	OSv            string     `json:"osv,omitempty"`
-	JS             int        `json:"js,omitempty"`
+	JS             int        `json:"js"`
 	DeviceType     int        `json:"devicetype,omitempty"` // 3=CTV, 7=set-top-box
+	IFA            string     `json:"ifa,omitempty"`
+	LMT            int        `json:"lmt"`
 	W              int        `json:"w,omitempty"`
 	H              int        `json:"h,omitempty"`
 	Language       string     `json:"language,omitempty"`
-	IFA            string     `json:"ifa,omitempty"`
-	LMT            *int       `json:"lmt,omitempty"`
 	ConnectionType int        `json:"connectiontype,omitempty"`
 	Ext            *DeviceExt `json:"ext,omitempty"`
 }
@@ -132,7 +135,7 @@ type User struct {
 }
 
 type UserExt struct {
-	Consent string `json:"consent"` // GDPR consent string
+	Consent string `json:"consent,omitempty"` // GDPR consent string
 }
 
 type Regs struct {
@@ -165,12 +168,13 @@ type ReqExt struct {
 }
 
 // BuildFromHTTP constructs a CTV/in-app video BidRequest from an HTTP request.
-// Query params come from the publisher's CTV player (macros replaced at runtime).
+// Supports both the legacy query params and the supply-tag VAST URL format:
 //
 //	/api/vast?sid=1211&w=1920&h=1080&cb=...&ip=...&ua=...&app_bundle=...
-//	         &app_name=...&app_store_url=...&country_code=US&max_dur=60
-//	         &min_dur=3&device_make=...&device_model=...&device_type=3
-//	         &ct_lang=en&dnt=0&lmt=0&ifa=...&os=...&us_privacy=1---
+//	         &app_name=...&app_store_url=...&country_code=US&max_dur=30
+//	         &min_dur=5&device_make=...&device_model=...&device_type=3
+//	         &ct_genre=game,entertainment&ct_lang=en&dnt=0&ifa=...&os=...
+//	         &us_privacy=1---&lmt=0
 func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 	w, _ := strconv.Atoi(c.Query("w", "1920"))
 	h, _ := strconv.Atoi(c.Query("h", "1080"))
@@ -183,56 +187,22 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 		skippable = 1
 	}
 
-	// Secure based on actual protocol
-	secure := 0
-	if c.Protocol() == "https" {
-		secure = 1
-	}
+	tagID := c.Query("sid", c.Query("tagid", c.Params("tag")))
 
-	boxingAllowed := 0
-
-	// Device type: default 3 (CTV)
 	deviceType := 3
 	if dt := c.Query("device_type", c.Query("devicetype")); dt != "" {
 		deviceType, _ = strconv.Atoi(dt)
 	}
 
-	// DNT
-	dntVal := 0
-	if d := c.Query("dnt"); d != "" {
-		dntVal, _ = strconv.Atoi(d)
-	}
+	dnt, _ := strconv.Atoi(c.Query("dnt", "0"))
+	lmt, _ := strconv.Atoi(c.Query("lmt", "0"))
 
-	// LMT
-	lmtVal := 0
-	if l := c.Query("lmt"); l != "" {
-		lmtVal, _ = strconv.Atoi(l)
-	}
-
-	// IP: accept "ip" or "uip" (legacy)
 	ip := c.Query("ip", c.Query("uip", c.IP()))
-
-	// UA: accept "ua" query param or fall back to header
 	ua := c.Query("ua", c.Get("User-Agent"))
-
-	// Language
-	lang := c.Query("ct_lang", c.Query("lang", "en"))
-
-	// IFA (advertiser ID)
-	ifa := c.Query("ifa", c.Query("idfa"))
-
-	// App info
-	appBundle := c.Query("app_bundle", c.Query("bundle"))
-	appName := c.Query("app_name")
-	appStoreURL := c.Query("app_store_url", c.Query("storeurl"))
-
-	// Floor from query params, default 4.50
-	bidFloor := 4.50
-	if f := c.Query("floor", c.Query("bidfloor")); f != "" {
-		if parsed, err := strconv.ParseFloat(f, 64); err == nil {
-			bidFloor = parsed
-		}
-	}
+	ifa := c.Query("ifa")
+	bundle := c.Query("app_bundle", c.Query("bundle"))
+	deviceOS := c.Query("os")
+	deviceMake := c.Query("device_make")
 
 	reqID := uuid.New().String()
 
@@ -245,10 +215,11 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 		Imp: []Imp{
 			{
 				ID:          reqID,
-				Instl:       0,
-				BidFloor:    bidFloor,
+				BidFloor:    4.50,
 				BidFloorCur: "USD",
-				Secure:      &secure,
+				Secure:      0,
+				Instl:       0,
+				TagID:       tagID,
 				Video: &Video{
 					Mimes:         []string{"video/mp4", "video/webm"},
 					Linearity:     1,
@@ -257,36 +228,84 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 					Protocols:     []int{2, 3, 5, 6, 7, 8},
 					W:             w,
 					H:             h,
-					Skip:          &skippable,
+					Skip:          skippable,
 					Sequence:      1,
-					BoxingAllowed: &boxingAllowed,
+					BoxingAllowed: 0,
 					Placement:     1,
 				},
 			},
 		},
 		App: &App{
-			ID:       appBundle,
-			Name:     appName,
-			Bundle:   appBundle,
-			StoreURL: appStoreURL,
+			ID:       bundle,
+			Name:     c.Query("app_name"),
+			Bundle:   bundle,
+			StoreURL: c.Query("app_store_url", c.Query("storeurl")),
+			Ver:      c.Query("app_ver"),
 		},
 		Device: Device{
-			DNT:        &dntVal,
+			DNT:        dnt,
 			UA:         ua,
 			IP:         ip,
-			Make:       c.Query("device_make"),
+			Make:       deviceMake,
 			Model:      c.Query("device_model"),
-			OS:         c.Query("os", c.Query("device_os")),
+			OS:         deviceOS,
 			OSv:        c.Query("osv"),
 			JS:         0,
 			DeviceType: deviceType,
-			W:          w,
-			H:          h,
-			Language:   lang,
 			IFA:        ifa,
-			LMT:        &lmtVal,
+			LMT:        lmt,
 		},
-		Ext: &ReqExt{},
+		Regs: &Regs{
+			COPPA: 0,
+			Ext:   &RegsExt{GDPR: 0, USPriv: c.Query("us_privacy", "1---")},
+		},
+	}
+
+	// IFA type detection based on device OS/make/UA
+	ifaType := geo.DetectIFAType(ua, deviceMake, deviceOS)
+	if ifaType != "" {
+		req.Device.Ext = &DeviceExt{IFAType: ifaType}
+	}
+
+	// User: id = IFA
+	if ifa != "" {
+		req.User = &User{ID: ifa, Ext: &UserExt{Consent: ""}}
+	}
+
+	// Geo from query params
+	country := c.Query("country_code", c.Query("country"))
+	region := c.Query("region")
+	city := c.Query("city")
+	zip := c.Query("zip")
+	req.Device.Geo = &Geo{Country: country, Region: region, City: city, Zip: zip, Type: 2}
+
+	// MaxMind fallback for geo and carrier
+	if geoResult := geo.Lookup(ip); geoResult != nil {
+		g := req.Device.Geo
+		if g.Lat == 0 && g.Lon == 0 {
+			g.Lat = geoResult.Lat
+			g.Lon = geoResult.Lon
+		}
+		if g.Country == "" {
+			g.Country = geoResult.Country
+		}
+		if g.Region == "" {
+			g.Region = geoResult.Region
+		}
+		if g.Metro == "" {
+			g.Metro = geoResult.Metro
+		}
+		if g.City == "" {
+			g.City = geoResult.City
+		}
+		if g.Zip == "" {
+			g.Zip = geoResult.Zip
+		}
+		if g.Accuracy == 0 {
+			g.Accuracy = geoResult.Accuracy
+		}
+		g.IPService = 3 // MaxMind
+		req.Device.Carrier = geoResult.Carrier
 	}
 
 	// Connection type
@@ -294,41 +313,31 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 		req.Device.ConnectionType, _ = strconv.Atoi(ct)
 	}
 
-	// IFA type extension
-	if ifa != "" {
-		req.Device.Ext = &DeviceExt{IFAType: "afai"}
-	}
-
-	// User from IFA
-	req.User = &User{
-		ID:  ifa,
-		Ext: &UserExt{Consent: ""},
-	}
-
-	// Geo from query params (MaxMind fills missing fields later)
-	country := c.Query("country_code", c.Query("country"))
-	region := c.Query("region")
-	city := c.Query("city")
-	zip := c.Query("zip")
-	metro := c.Query("metro")
-	if country != "" || region != "" || city != "" {
-		req.Device.Geo = &Geo{
-			Country: country,
-			Region:  region,
-			Metro:   metro,
-			City:    city,
-			Zip:     zip,
-			Type:    2,
+	// CTV content categories from ct_genre
+	if ctGenre := c.Query("ct_genre"); ctGenre != "" {
+		cats := strings.Split(ctGenre, ",")
+		if req.App != nil {
+			req.App.Cat = cats
 		}
 	}
 
-	// Privacy / Regs (always present)
-	coppa, _ := strconv.Atoi(c.Query("coppa", "0"))
-	gdpr, _ := strconv.Atoi(c.Query("gdpr", "0"))
-	usprivacy := c.Query("us_privacy", "1---")
-	req.Regs = &Regs{
-		COPPA: coppa,
-		Ext:   &RegsExt{GDPR: gdpr, USPriv: usprivacy},
+	// Privacy overrides from query params
+	if coppa := c.Query("coppa"); coppa != "" {
+		req.Regs.COPPA, _ = strconv.Atoi(coppa)
+	}
+	if gdpr := c.Query("gdpr"); gdpr != "" {
+		req.Regs.Ext.GDPR, _ = strconv.Atoi(gdpr)
+	}
+
+	// Supply chain transparency
+	req.Ext = &ReqExt{
+		SChain: &SChain{
+			Complete: 1,
+			Ver:      "1.0",
+			Nodes: []SChainNode{
+				{ASI: "viadsmedia.com", SID: "pub-001", HP: 1},
+			},
+		},
 	}
 
 	return req

@@ -14,7 +14,6 @@ import (
 	"ssp/internal/bidder"
 	"ssp/internal/config"
 	"ssp/internal/floor"
-	"ssp/internal/geo"
 	"ssp/internal/httputil"
 	"ssp/internal/monitor"
 	"ssp/internal/openrtb"
@@ -217,11 +216,9 @@ func enrichFromSupplyTag(req *openrtb.BidRequest, tag *SupplyTag) {
 	// Dimensions
 	if tag.Width > 0 && req.Imp[0].Video != nil {
 		req.Imp[0].Video.W = tag.Width
-		req.Device.W = tag.Width
 	}
 	if tag.Height > 0 && req.Imp[0].Video != nil {
 		req.Imp[0].Video.H = tag.Height
-		req.Device.H = tag.Height
 	}
 	// Duration
 	if tag.MinDur > 0 && req.Imp[0].Video != nil {
@@ -402,13 +399,12 @@ func vastHandler(mgr *bidder.Manager, metrics *monitor.Metrics, s *store, auctio
 		if tag == "" {
 			tag = c.Query("tag")
 		}
-		var supplyTag *SupplyTag
 		if tag != "" {
-			supplyTag = s.lookupSupplyByTag(tag)
-			if supplyTag == nil {
+			if st := s.lookupSupplyByTag(tag); st == nil {
 				return c.Status(403).JSON(fiber.Map{"error": "Unknown supply source"})
 			}
 		} else {
+			// No tag provided — reject as unknown
 			return c.Status(403).JSON(fiber.Map{"error": "Unknown supply source"})
 		}
 
@@ -416,8 +412,6 @@ func vastHandler(mgr *bidder.Manager, metrics *monitor.Metrics, s *store, auctio
 		metrics.RecordAdOpp()
 
 		req := openrtb.BuildFromHTTP(c)
-		enrichFromSupplyTag(&req, supplyTag)
-		geo.EnrichRequest(&req)
 
 		// Validate request per PDF spec section 6
 		if err := validate.Request(&req); err != nil {
@@ -1440,7 +1434,6 @@ func supplyTagVastHandler(p *pipeline.Pipeline, metrics *monitor.Metrics, s *sto
 
 		req := openrtb.BuildFromHTTP(c)
 		enrichFromSupplyTag(&req, tag)
-		geo.EnrichRequest(&req)
 
 		if err := validate.Request(&req); err != nil {
 			metrics.RecordError()
@@ -1510,7 +1503,6 @@ func pipelineHandler(p *pipeline.Pipeline, metrics *monitor.Metrics, s *store) f
 
 		req := openrtb.BuildFromHTTP(c)
 		enrichFromSupplyTag(&req, supplyTag)
-		geo.EnrichRequest(&req)
 
 		if err := validate.Request(&req); err != nil {
 			metrics.RecordError()
