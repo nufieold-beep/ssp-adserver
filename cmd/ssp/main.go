@@ -13,6 +13,7 @@ import (
 	"ssp/internal/config"
 	"ssp/internal/eventbus"
 	"ssp/internal/floor"
+	"ssp/internal/geo"
 	ssphttp "ssp/internal/http"
 	"ssp/internal/monitor"
 	"ssp/internal/pipeline"
@@ -32,6 +33,10 @@ func main() {
 	// Legacy bidder manager (backward-compatible)
 	mgr := bidder.NewManagerFromConfig(cfg)
 	metrics := monitor.New()
+
+	// ── MaxMind GeoIP2 (graceful — skips if DB files missing) ──
+	geo.Init("data/GeoLite2-City.mmdb", "data/GeoLite2-ASN.mmdb")
+	defer geo.Close()
 
 	// ── Enterprise components ──
 	bus := eventbus.New()
