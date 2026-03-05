@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -199,6 +200,57 @@ func (s *store) lookupSupplyByTag(tag string) *SupplyTag {
 		}
 	}
 	return nil
+}
+
+// enrichFromSupplyTag overrides the BidRequest fields with the supply tag
+// configuration set in the dashboard. The dashboard config is the source of
+// truth — it always overrides the query-param defaults.
+func enrichFromSupplyTag(req *openrtb.BidRequest, tag *SupplyTag) {
+	if tag == nil || len(req.Imp) == 0 {
+		return
+	}
+	// Floor: use tag floor (override default $5)
+	if tag.Floor > 0 {
+		req.Imp[0].BidFloor = tag.Floor
+	}
+	// Dimensions
+	if tag.Width > 0 && req.Imp[0].Video != nil {
+		req.Imp[0].Video.W = tag.Width
+		req.Device.W = tag.Width
+	}
+	if tag.Height > 0 && req.Imp[0].Video != nil {
+		req.Imp[0].Video.H = tag.Height
+		req.Device.H = tag.Height
+	}
+	// Duration
+	if tag.MinDur > 0 && req.Imp[0].Video != nil {
+		req.Imp[0].Video.MinDuration = tag.MinDur
+	}
+	if tag.MaxDur > 0 && req.Imp[0].Video != nil {
+		req.Imp[0].Video.MaxDuration = tag.MaxDur
+	}
+	// Slot ID
+	if tag.SlotID != "" {
+		req.Imp[0].TagID = tag.SlotID
+	}
+	// Device type from supply tag env
+	if tag.DeviceType > 0 {
+		req.Device.DeviceType = tag.DeviceType
+	}
+	// Country code
+	if tag.CountryCode != "" && req.Device.Geo != nil {
+		req.Device.Geo.Country = tag.CountryCode
+	} else if tag.CountryCode != "" {
+		req.Device.Geo = &openrtb.Geo{Country: tag.CountryCode, Type: 2}
+	}
+	// Content genre
+	if tag.ContentGenre != "" && req.App != nil {
+		req.App.Cat = strings.Split(tag.ContentGenre, ",")
+	}
+	// Content language
+	if tag.ContentLang != "" {
+		req.Device.Language = tag.ContentLang
+	}
 }
 
 func (s *store) recordAdDecision(req *openrtb.BidRequest, winner *openrtb.Bid, winPrice float64, source, demandEp string) {
@@ -1383,28 +1435,7 @@ func supplyTagVastHandler(p *pipeline.Pipeline, metrics *monitor.Metrics, s *sto
 		}
 
 		req := openrtb.BuildFromHTTP(c)
-
-		// Enrich request with supply tag config (floor, dimensions, duration)
-		if tag.Floor > 0 && tag.Floor > req.Imp[0].BidFloor {
-			req.Imp[0].BidFloor = tag.Floor
-		}
-		if tag.Width > 0 && req.Imp[0].Video != nil {
-			req.Imp[0].Video.W = tag.Width
-			req.Device.W = tag.Width
-		}
-		if tag.Height > 0 && req.Imp[0].Video != nil {
-			req.Imp[0].Video.H = tag.Height
-			req.Device.H = tag.Height
-		}
-		if tag.MinDur > 0 && req.Imp[0].Video != nil {
-			req.Imp[0].Video.MinDuration = tag.MinDur
-		}
-		if tag.MaxDur > 0 && req.Imp[0].Video != nil {
-			req.Imp[0].Video.MaxDuration = tag.MaxDur
-		}
-		if tag.SlotID != "" {
-			req.Imp[0].TagID = tag.SlotID
-		}
+		enrichFromSupplyTag(&req, tag)
 
 		if err := validate.Request(&req); err != nil {
 			metrics.RecordError()
@@ -1462,16 +1493,18 @@ func pipelineHandler(p *pipeline.Pipeline, metrics *monitor.Metrics, s *store) f
 		if tag == "" {
 			tag = c.Query("tag")
 		}
+		var supplyTag *SupplyTag
 		if tag != "" {
-			if st := s.lookupSupplyByTag(tag); st == nil {
+			supplyTag = s.lookupSupplyByTag(tag)
+			if supplyTag == nil {
 				return c.Status(403).JSON(fiber.Map{"error": "Unknown supply source"})
 			}
 		} else {
-			// No tag provided — reject as unknown
 			return c.Status(403).JSON(fiber.Map{"error": "Unknown supply source"})
 		}
 
 		req := openrtb.BuildFromHTTP(c)
+		enrichFromSupplyTag(&req, supplyTag)
 
 		if err := validate.Request(&req); err != nil {
 			metrics.RecordError()
