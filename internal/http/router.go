@@ -457,7 +457,7 @@ func vastHandler(mgr *bidder.Manager, metrics *monitor.Metrics, s *store, auctio
 		}
 
 		// Build VAST XML with real tracking URLs and burl as impression pixel
-		xml := vast.Build(winner, req.ID, c.BaseURL(), &req)
+		xml := vast.Build(winner, &req, c.BaseURL())
 		if xml == "" {
 			metrics.RecordError()
 			return c.Status(500).JSON(fiber.Map{"error": "Failed to build VAST"})
@@ -523,32 +523,27 @@ func registerEventRoutes(app *fiber.App, metrics *monitor.Metrics) {
 			var details string
 			switch handler.detail {
 			case "bid=%s price=%s":
-				details = fmt.Sprintf("crid=%s price=%s adom=%s bndl=%s ctry=%s",
-					c.Query("crid"), c.Query("price"), c.Query("adom"), c.Query("bndl"), c.Query("ctry"))
+				details = fmt.Sprintf("bid=%s price=%s", c.Query("bid"), c.Query("price"))
 			case "code=%s":
 				details = fmt.Sprintf("code=%s", c.Query("code"))
 			default:
 				details = fmt.Sprintf("bid=%s", c.Query("bid"))
 			}
 
-			price := 0.0
-			if p := c.Query("price"); p != "" {
-				price, _ = strconv.ParseFloat(p, 64)
-			}
-
+			env := c.Query("env", "ctv")
 			metrics.AddTrafficEvent(monitor.TrafficEvent{
-				Type:       handler.eventType,
-				RequestID:  c.Query("rid"),
-				Env:        c.Query("env", "ctv"),
-				Details:    details,
-				CampaignID: c.Query("cmp"),
-				CreativeID: c.Query("crid"),
-				Country:    c.Query("ctry"),
-				IP:         c.Query("ip"),
-				Bundle:     c.Query("bndl"),
-				Adomain:    c.Query("adom"),
-				Price:      price,
-				Source:     c.Query("sr"),
+				Type:      handler.eventType,
+				RequestID: c.Query("rid"),
+				Env:       env,
+				Details:   details,
+				Campaign:  c.Query("cmp"),
+				Creative:  c.Query("crid"),
+				Country:   c.Query("ctry"),
+				IP:        c.Query("ip"),
+				Supply:    c.Query("sr"),
+				Bundle:    c.Query("bndl"),
+				ADomain:   c.Query("adom"),
+				Price:     c.Query("price"),
 			})
 			return c.SendStatus(204)
 		})

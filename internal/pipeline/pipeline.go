@@ -175,7 +175,7 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 	}
 
 	// ── Stage 8: Build VAST response ──
-	xml := vast.Build(winner, req.ID, result.BaseURL, req)
+	xml := vast.Build(winner, req, result.BaseURL)
 	if xml == "" {
 		p.Metrics.RecordError()
 		result.Error = fmt.Errorf("VAST build failed for bid %s", winner.ID)
