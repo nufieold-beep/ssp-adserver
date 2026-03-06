@@ -273,7 +273,7 @@ textarea{resize:vertical;min-height:68px}
   <div class="card">
     <div class="card-header"><h3>Recent Bid Results</h3></div>
     <div class="card-body table-wrap">
-      <table><thead><tr><th>ADomain</th><th>Demand ID</th><th>Creative ID</th><th>Impressions</th><th>Revenue</th><th>eCPM</th><th>Avg Win $</th></tr></thead>
+      <table><thead><tr><th>ADomain</th><th>Demand ID</th><th>Creative ID</th><th>Impressions</th><th>Revenue</th><th>eCPM</th><th>Gross CPM</th></tr></thead>
         <tbody id="bsTableBody"><tr><td colspan="7" class="empty">Loading...</td></tr></tbody>
       </table>
     </div>
@@ -959,7 +959,7 @@ async function loadBidStream() {
     $('bsTableBody').innerHTML = (demand||[]).length ? demand.map(r=>`<tr>
       <td>${esc(r.adomain||'—')}</td><td>${esc(r.demand_id||'—')}</td><td>${esc(r.creative_id||'—')}</td>
       <td>${fmtNum(r.impressions||0)}</td><td>${fmtMoney(r.revenue||0)}</td>
-      <td>$${Number(r.ecpm||0).toFixed(2)}</td><td>$${Number(r.avg_win_price||0).toFixed(2)}</td>
+      <td>$${Number(r.ecpm||0).toFixed(2)}</td><td>$${Number(r.gross_cpm||0).toFixed(2)}</td>
     </tr>`).join('') : '<tr><td colspan="7" class="empty">No bid data</td></tr>';
   } catch(e) {}
 }

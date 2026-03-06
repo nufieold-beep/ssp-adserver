@@ -515,7 +515,7 @@ func vastHandler(mgr *bidder.Manager, metrics *monitor.Metrics, s *store, auctio
 		// Record win metrics
 		metrics.RecordImpression()
 		metrics.RecordWin(result.WinPrice)
-		metrics.RecordSpend(result.WinPrice)
+		metrics.RecordSpend(result.WinPrice * 0.85) // Record Net Revenue
 		metrics.RecordVastStart()
 
 		metrics.AddTrafficEvent(monitor.TrafficEvent{
@@ -915,12 +915,40 @@ func registerAnalyticsRoutes(app *fiber.App, s *store, metrics *monitor.Metrics)
 	app.Get("/api/v1/analytics/reports/demand", func(c *fiber.Ctx) error {
 		s.mu.RLock()
 		defer s.mu.RUnlock()
-		rows := make([]fiber.Map, 0, len(s.adDecisions))
+
+		type agg struct {
+			DemandID   string
+			ADomain    string
+			CreativeID string
+			Imps       int
+			NetRev     float64
+			GrossRev   float64
+		}
+		groups := make(map[string]*agg)
 		for _, d := range s.adDecisions {
+			key := d.DemandEp + "|" + d.ADomain + "|" + d.CreativeID
+			if groups[key] == nil {
+				groups[key] = &agg{DemandID: d.DemandEp, ADomain: d.ADomain, CreativeID: d.CreativeID}
+			}
+			groups[key].Imps++
+			groups[key].NetRev += d.NetPrice / 1000.0
+			groups[key].GrossRev += d.BidPrice / 1000.0
+		}
+
+		var rows []fiber.Map
+		for _, g := range groups {
+			ecpm := 0.0
+			if g.Imps > 0 {
+				ecpm = (g.NetRev / float64(g.Imps)) * 1000.0
+			}
+			gross := 0.0
+			if g.Imps > 0 {
+				gross = (g.GrossRev / float64(g.Imps)) * 1000.0
+			}
 			rows = append(rows, fiber.Map{
-				"adomain": d.ADomain, "demand_id": d.DemandEp, "creative_id": d.CreativeID,
-				"impressions": 1, "revenue": d.NetPrice / 1000.0, "ecpm": d.NetPrice,
-				"avg_win_price": d.BidPrice,
+				"adomain": g.ADomain, "demand_id": g.DemandID, "creative_id": g.CreativeID,
+				"impressions": g.Imps, "revenue": g.NetRev, "ecpm": ecpm,
+				"gross_cpm": gross,
 			})
 		}
 		return c.JSON(rows)

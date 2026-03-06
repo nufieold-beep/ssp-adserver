@@ -187,7 +187,7 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 	auction.FireBillingNotice(winner)
 	p.Metrics.RecordImpression()
 	p.Metrics.RecordWin(auctionResult.WinPrice)
-	p.Metrics.RecordSpend(auctionResult.WinPrice)
+	p.Metrics.RecordSpend(auctionResult.WinPrice * 0.85) // Record Net Revenue
 	p.Metrics.RecordVastStart()
 
 	p.Metrics.AddTrafficEvent(monitor.TrafficEvent{
