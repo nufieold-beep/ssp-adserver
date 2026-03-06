@@ -519,6 +519,22 @@ textarea{resize:vertical;min-height:68px}
       </div>
     </div>
   </div>
+  <div class="card" style="margin-top:16px">
+    <div class="card-header"><h3>Change Dashboard Password</h3></div>
+    <div class="card-body">
+      <div class="form-row">
+        <div class="form-group"><label>Current Password</label><input id="cpCurrent" type="password" placeholder="Enter current password"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>New Username</label><input id="cpNewUser" placeholder="Leave empty to keep current"></div>
+        <div class="form-group"><label>New Password</label><input id="cpNewPass" type="password" placeholder="Enter new password"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Confirm New Password</label><input id="cpConfirm" type="password" placeholder="Re-enter new password"></div>
+        <div class="form-group" style="justify-content:flex-end"><label>&nbsp;</label><button class="btn btn-primary" onclick="changePassword()">Update Password</button></div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- ── Enterprise: Adapters ── -->
@@ -1456,14 +1472,21 @@ async function saveAdQuality(){
 function doLogin(){
   const u=$v('loginUser').trim();
   const p=$v('loginPass');
-  if(u==='admin'&&p==='admin'){
+  if(!u||!p){$('loginError').style.display='block';return;}
+  fetch((typeof API_BASE!=='undefined'?API_BASE:window.location.origin)+'/api/v1/auth/login',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({username:u,password:p})
+  }).then(r=>{
+    if(!r.ok) throw new Error('fail');
+    return r.json();
+  }).then(d=>{
     sessionStorage.setItem('viadsmedia_auth','1');
     $('loginOverlay').style.display='none';
     $('appMain').style.display='flex';
     loadDashboard();
-  } else {
+  }).catch(e=>{
     $('loginError').style.display='block';
-  }
+  });
 }
 function doLogout(){
   sessionStorage.removeItem('viadsmedia_auth');
@@ -1472,6 +1495,26 @@ function doLogout(){
   $('loginUser').value='';
   $('loginPass').value='';
   $('loginError').style.display='none';
+}
+async function changePassword(){
+  const cur=$v('cpCurrent');
+  const newPass=$v('cpNewPass');
+  const confirm=$v('cpConfirm');
+  const newUser=$v('cpNewUser').trim();
+  if(!cur) return toast('Current password is required','error');
+  if(!newPass) return toast('New password is required','error');
+  if(newPass!==confirm) return toast('Passwords do not match','error');
+  if(newPass.length<4) return toast('Password must be at least 4 characters','error');
+  try{
+    const r=await fetch(API_BASE+'/api/v1/auth/password',{
+      method:'PUT',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({current_password:cur,new_username:newUser||'',new_password:newPass})
+    });
+    const d=await r.json();
+    if(!r.ok) throw new Error(d.error||'Failed');
+    toast('Password updated successfully');
+    $('cpCurrent').value='';$('cpNewUser').value='';$('cpNewPass').value='';$('cpConfirm').value='';
+  }catch(e){toast(e.message||'Failed to update password','error');}
 }
 // Enter key on login fields
 document.addEventListener('DOMContentLoaded',function(){

@@ -1,6 +1,7 @@
 package http
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -173,6 +174,9 @@ type store struct {
 	nextRuleID     int
 
 	adDecisions []AdDecision
+
+	dashboardUser string
+	dashboardPass string
 }
 
 func newStore() *store {
@@ -195,6 +199,8 @@ func newStore() *store {
 		mappingsBySID:        make(map[int][]*SDMapping),
 		targetingRules:       make(map[int]*TargetingRule),
 		nextRuleID:           1,
+		dashboardUser:        "admin",
+		dashboardPass:        "admin",
 	}
 }
 
@@ -441,6 +447,9 @@ func NewRouterWithDeps(cfg *config.Config, mgr *bidder.Manager, metrics *monitor
 
 	// ─── VAST Event Tracking Callbacks ───
 	registerEventRoutes(app, metrics)
+
+	// ─── Auth: Login & Password Management ───
+	registerAuthRoutes(app, s)
 
 	// ─── Admin: Campaigns CRUD ───
 	auth := AdminAPIKey()
@@ -1056,6 +1065,60 @@ func registerAnalyticsRoutes(app *fiber.App, s *store, metrics *monitor.Metrics)
 			events = make([]monitor.TrafficEvent, 0)
 		}
 		return c.JSON(events)
+	})
+}
+
+// ── Auth Routes ──
+
+func registerAuthRoutes(app *fiber.App, s *store) {
+	// Login — validates username + password, returns success/failure
+	app.Post("/api/v1/auth/login", func(c *fiber.Ctx) error {
+		var body struct {
+			Username string `json:"username"`
+			Password string `json:"password"`
+		}
+		if err := c.BodyParser(&body); err != nil {
+			return c.Status(400).JSON(fiber.Map{"error": "Invalid input"})
+		}
+		s.mu.RLock()
+		user := s.dashboardUser
+		pass := s.dashboardPass
+		s.mu.RUnlock()
+
+		userOK := subtle.ConstantTimeCompare([]byte(body.Username), []byte(user)) == 1
+		passOK := subtle.ConstantTimeCompare([]byte(body.Password), []byte(pass)) == 1
+		if !userOK || !passOK {
+			return c.Status(401).JSON(fiber.Map{"error": "Invalid username or password"})
+		}
+		return c.JSON(fiber.Map{"success": true, "user": user})
+	})
+
+	// Change password — requires current password for verification
+	app.Put("/api/v1/auth/password", func(c *fiber.Ctx) error {
+		var body struct {
+			CurrentPassword string `json:"current_password"`
+			NewUsername     string `json:"new_username"`
+			NewPassword     string `json:"new_password"`
+		}
+		if err := c.BodyParser(&body); err != nil {
+			return c.Status(400).JSON(fiber.Map{"error": "Invalid input"})
+		}
+		if body.NewPassword == "" {
+			return c.Status(400).JSON(fiber.Map{"error": "New password is required"})
+		}
+
+		s.mu.Lock()
+		defer s.mu.Unlock()
+
+		if subtle.ConstantTimeCompare([]byte(body.CurrentPassword), []byte(s.dashboardPass)) != 1 {
+			return c.Status(401).JSON(fiber.Map{"error": "Current password is incorrect"})
+		}
+
+		if body.NewUsername != "" {
+			s.dashboardUser = body.NewUsername
+		}
+		s.dashboardPass = body.NewPassword
+		return c.JSON(fiber.Map{"success": true, "message": "Credentials updated"})
 	})
 }
 
