@@ -1,5 +1,7 @@
 ssp
+ssp_server
 ssp.exe
 ssp.exe~
+data/
 *.bak
 .venv/
