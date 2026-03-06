@@ -23,6 +23,9 @@ type ServerConfig struct {
 	DefaultFloor  float64 `yaml:"default_floor" json:"default_floor"`
 	DefaultTMax   int     `yaml:"default_tmax" json:"default_tmax"`
 	DashboardPath string  `yaml:"dashboard_path" json:"dashboard_path"`
+	ORTBBidFloor  float64 `yaml:"ortb_bid_floor" json:"ortb_bid_floor"`
+	ORTBMinDur    int     `yaml:"ortb_min_duration" json:"ortb_min_duration"`
+	ORTBMaxDur    int     `yaml:"ortb_max_duration" json:"ortb_max_duration"`
 }
 
 type Config struct {
@@ -96,6 +99,15 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Server.DashboardPath == "" {
 		cfg.Server.DashboardPath = "dashboard.html"
+	}
+	if cfg.Server.ORTBBidFloor == 0 {
+		cfg.Server.ORTBBidFloor = 0.50
+	}
+	if cfg.Server.ORTBMinDur == 0 {
+		cfg.Server.ORTBMinDur = 5
+	}
+	if cfg.Server.ORTBMaxDur == 0 {
+		cfg.Server.ORTBMaxDur = 30
 	}
 
 	return &cfg, nil

@@ -14,7 +14,6 @@ import (
 	"ssp/internal/bidder"
 	"ssp/internal/config"
 	"ssp/internal/floor"
-	"ssp/internal/geo"
 	"ssp/internal/httputil"
 	"ssp/internal/monitor"
 	"ssp/internal/openrtb"
@@ -70,7 +69,7 @@ type SupplyTag struct {
 	Status      int     `json:"status"`
 	Channel     string  `json:"channel"`
 	// CTV-specific fields for VAST tag generation
-	CountryCode string `json:"country_code,omitempty"`
+	CountryCode  string `json:"country_code,omitempty"`
 	ContentGenre string `json:"content_genre,omitempty"` // comma-separated: game,entertainment,family
 	ContentLang  string `json:"content_lang,omitempty"`  // en, es, etc.
 	DeviceType   int    `json:"device_type,omitempty"`   // 3=CTV, 7=STB
@@ -240,7 +239,7 @@ func enrichFromSupplyTag(req *openrtb.BidRequest, tag *SupplyTag) {
 	if tag.CountryCode != "" {
 		cc := tag.CountryCode
 		if len(cc) == 2 {
-			cc = geo.ToAlpha3(cc)
+			cc = openrtb.ToAlpha3(cc)
 		}
 		if req.Device.Geo != nil {
 			req.Device.Geo.Country = cc
@@ -506,7 +505,7 @@ func registerEventRoutes(app *fiber.App, metrics *monitor.Metrics) {
 	}
 
 	events := []vastEvent{
-		{"/impression", "vast_impression", metrics.RecordImpression, "bid=%s price=%s"},
+		{"/impression", "vast_impression", metrics.RecordImpression, "cmp=%s crid=%s price=%s"},
 		{"/start", "vast_start", metrics.RecordVastStart, ""},
 		{"/firstQuartile", "vast_q1", metrics.RecordVastQ1, ""},
 		{"/midpoint", "vast_mid", metrics.RecordVastMid, ""},
@@ -529,8 +528,8 @@ func registerEventRoutes(app *fiber.App, metrics *monitor.Metrics) {
 			}
 			var details string
 			switch handler.detail {
-			case "bid=%s price=%s":
-				details = fmt.Sprintf("bid=%s price=%s", c.Query("bid"), c.Query("price"))
+			case "cmp=%s crid=%s price=%s":
+				details = fmt.Sprintf("cmp=%s crid=%s price=%s", c.Query("cmp"), c.Query("crid"), c.Query("price"))
 			case "code=%s":
 				details = fmt.Sprintf("code=%s", c.Query("code"))
 			default:
@@ -1167,10 +1166,10 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 			}
 			acfg := &adapter.AdapterConfig{
 				ID: adapterID, Name: e.Name,
-				Type:      adapter.AdapterType(e.Integration),
-				Endpoint:  e.URL, TimeoutMs: timeout,
-				Floor:     e.Floor, Margin: e.Margin,
-				QPSLimit:  e.QPS, Status: 1,
+				Type:     adapter.AdapterType(e.Integration),
+				Endpoint: e.URL, TimeoutMs: timeout,
+				Floor: e.Floor, Margin: e.Margin,
+				QPSLimit: e.QPS, Status: 1,
 			}
 			switch adapter.AdapterType(e.Integration) {
 			case adapter.TypeVAST:
@@ -1273,8 +1272,8 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 				ID: adapterID, Name: t.Name,
 				Type:     adapter.TypeVAST,
 				Endpoint: t.URL, TimeoutMs: 200,
-				Floor:    t.Floor, Margin: t.Margin,
-				Status:   1,
+				Floor: t.Floor, Margin: t.Margin,
+				Status: 1,
 			}
 			eDeps.Registry.Register(adapter.NewVASTAdapter(acfg), acfg)
 		}

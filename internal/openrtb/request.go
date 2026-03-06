@@ -4,11 +4,36 @@ import (
 	"strconv"
 	"strings"
 
-	"ssp/internal/geo"
-
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 )
+
+// RequestDefaults controls generated OpenRTB request defaults.
+// It can be configured at startup via ConfigureRequestDefaults.
+type RequestDefaults struct {
+	BidFloor float64
+	MinDur   int
+	MaxDur   int
+}
+
+var requestDefaults = RequestDefaults{
+	BidFloor: 0.50,
+	MinDur:   5,
+	MaxDur:   30,
+}
+
+// ConfigureRequestDefaults applies startup defaults for BuildFromHTTP.
+func ConfigureRequestDefaults(d RequestDefaults) {
+	if d.BidFloor > 0 {
+		requestDefaults.BidFloor = d.BidFloor
+	}
+	if d.MinDur > 0 {
+		requestDefaults.MinDur = d.MinDur
+	}
+	if d.MaxDur > 0 {
+		requestDefaults.MaxDur = d.MaxDur
+	}
+}
 
 // ── OpenRTB 2.6 BidRequest (CTV-focused, per spec) ──
 
@@ -20,7 +45,7 @@ type BidRequest struct {
 	Device  Device   `json:"device"`
 	User    *User    `json:"user,omitempty"`
 	Regs    *Regs    `json:"regs,omitempty"`
-	At      int      `json:"at,omitempty"`      // 1=first-price, 2=second-price
+	At      int      `json:"at,omitempty"` // 1=first-price, 2=second-price
 	TMax    int      `json:"tmax,omitempty"`
 	AllImps int      `json:"allimps"`
 	Cur     []string `json:"cur,omitempty"`
@@ -96,7 +121,7 @@ type Geo struct {
 	Metro     string  `json:"metro,omitempty"`
 	City      string  `json:"city,omitempty"`
 	Zip       string  `json:"zip,omitempty"`
-	Type      int     `json:"type,omitempty"`      // 1=GPS, 2=IP
+	Type      int     `json:"type,omitempty"` // 1=GPS, 2=IP
 	Accuracy  int     `json:"accuracy,omitempty"`
 	IPService int     `json:"ipservice,omitempty"` // 3=MaxMind
 }
@@ -167,20 +192,18 @@ type ReqExt struct {
 	SChain *SChain `json:"schain,omitempty"`
 }
 
-// BuildFromHTTP constructs a CTV/in-app video BidRequest from an HTTP request.
-// Supports both the legacy query params and the supply-tag VAST URL format:
+// BuildFromHTTP constructs a CTV/in-app video BidRequest from query params.
 //
-//	/api/vast?sid=1211&w=1920&h=1080&cb=...&ip=...&ua=...&app_bundle=...
-//	         &app_name=...&app_store_url=...&country_code=US&max_dur=30
-//	         &min_dur=5&device_make=...&device_model=...&device_type=3
-//	         &ct_genre=game,entertainment&ct_lang=en&dnt=0&ifa=...&os=...
+//	/api/vast?sid=1211&w=1920&h=1080&ip=...&ua=...&app_bundle=...
+//	         &app_name=...&app_store_url=...&country_code=US&max_dur=60
+//	         &min_dur=3&device_make=...&device_model=...&device_type=3
+//	         &ct_genre=game,entertainment&dnt=0&ifa=...&os=...
 //	         &us_privacy=1---&lmt=0
 func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 	w, _ := strconv.Atoi(c.Query("w", "1920"))
 	h, _ := strconv.Atoi(c.Query("h", "1080"))
-
-	minDur, _ := strconv.Atoi(c.Query("min_dur", c.Query("minduration", "3")))
-	maxDur, _ := strconv.Atoi(c.Query("max_dur", c.Query("maxduration", "60")))
+	minDur, _ := strconv.Atoi(c.Query("min_dur", c.Query("minduration", strconv.Itoa(requestDefaults.MinDur))))
+	maxDur, _ := strconv.Atoi(c.Query("max_dur", c.Query("maxduration", strconv.Itoa(requestDefaults.MaxDur))))
 
 	skippable := 0
 	if c.Query("skip") == "1" {
@@ -193,10 +216,10 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 	if dt := c.Query("device_type", c.Query("devicetype")); dt != "" {
 		deviceType, _ = strconv.Atoi(dt)
 	}
+	language := c.Query("ct_lang", c.Query("lang", "en"))
 
 	dnt, _ := strconv.Atoi(c.Query("dnt", "0"))
 	lmt, _ := strconv.Atoi(c.Query("lmt", "0"))
-
 	ip := c.Query("ip", c.Query("uip", c.IP()))
 	ua := c.Query("ua", c.Get("User-Agent"))
 	ifa := c.Query("ifa")
@@ -205,6 +228,12 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 	deviceMake := c.Query("device_make")
 
 	reqID := uuid.New().String()
+
+	// Country: accept alpha-2 or alpha-3
+	country := c.Query("country_code", c.Query("country"))
+	if len(country) == 2 {
+		country = ToAlpha3(country)
+	}
 
 	req := BidRequest{
 		ID:      reqID,
@@ -215,7 +244,7 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 		Imp: []Imp{
 			{
 				ID:          reqID,
-				BidFloor:    4.50,
+				BidFloor:    requestDefaults.BidFloor,
 				BidFloorCur: "USD",
 				Secure:      0,
 				Instl:       0,
@@ -246,6 +275,7 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 			DNT:        dnt,
 			UA:         ua,
 			IP:         ip,
+			Geo:        &Geo{Country: country, Region: c.Query("region"), City: c.Query("city"), Zip: c.Query("zip"), Type: 2},
 			Make:       deviceMake,
 			Model:      c.Query("device_model"),
 			OS:         deviceOS,
@@ -254,6 +284,7 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 			DeviceType: deviceType,
 			IFA:        ifa,
 			LMT:        lmt,
+			Language:   language,
 		},
 		Regs: &Regs{
 			COPPA: 0,
@@ -261,54 +292,14 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 		},
 	}
 
-	// IFA type detection based on device OS/make/UA
-	ifaType := geo.DetectIFAType(ua, deviceMake, deviceOS)
-	if ifaType != "" {
+	// IFA type detection
+	if ifaType := detectIFAType(ua, deviceMake, deviceOS); ifaType != "" {
 		req.Device.Ext = &DeviceExt{IFAType: ifaType}
 	}
 
-	// User: id = IFA
+	// User
 	if ifa != "" {
 		req.User = &User{ID: ifa, Ext: &UserExt{Consent: ""}}
-	}
-
-	// Geo from query params (convert alpha-2 country codes to alpha-3)
-	country := c.Query("country_code", c.Query("country"))
-	if len(country) == 2 {
-		country = geo.ToAlpha3(country)
-	}
-	region := c.Query("region")
-	city := c.Query("city")
-	zip := c.Query("zip")
-	req.Device.Geo = &Geo{Country: country, Region: region, City: city, Zip: zip, Type: 2}
-
-	// MaxMind fallback for geo and carrier
-	if geoResult := geo.Lookup(ip); geoResult != nil {
-		g := req.Device.Geo
-		if g.Lat == 0 && g.Lon == 0 {
-			g.Lat = geoResult.Lat
-			g.Lon = geoResult.Lon
-		}
-		if g.Country == "" {
-			g.Country = geoResult.Country
-		}
-		if g.Region == "" {
-			g.Region = geoResult.Region
-		}
-		if g.Metro == "" {
-			g.Metro = geoResult.Metro
-		}
-		if g.City == "" {
-			g.City = geoResult.City
-		}
-		if g.Zip == "" {
-			g.Zip = geoResult.Zip
-		}
-		if g.Accuracy == 0 {
-			g.Accuracy = geoResult.Accuracy
-		}
-		g.IPService = 3 // MaxMind
-		req.Device.Carrier = geoResult.Carrier
 	}
 
 	// Connection type
@@ -316,15 +307,12 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 		req.Device.ConnectionType, _ = strconv.Atoi(ct)
 	}
 
-	// CTV content categories from ct_genre
-	if ctGenre := c.Query("ct_genre"); ctGenre != "" {
-		cats := strings.Split(ctGenre, ",")
-		if req.App != nil {
-			req.App.Cat = cats
-		}
+	// Content categories
+	if ctGenre := c.Query("ct_genre"); ctGenre != "" && req.App != nil {
+		req.App.Cat = strings.Split(ctGenre, ",")
 	}
 
-	// Privacy overrides from query params
+	// Privacy overrides
 	if coppa := c.Query("coppa"); coppa != "" {
 		req.Regs.COPPA, _ = strconv.Atoi(coppa)
 	}
@@ -332,7 +320,7 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 		req.Regs.Ext.GDPR, _ = strconv.Atoi(gdpr)
 	}
 
-	// Supply chain transparency
+	// Supply chain
 	req.Ext = &ReqExt{
 		SChain: &SChain{
 			Complete: 1,
@@ -344,4 +332,53 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 	}
 
 	return req
+}
+
+// detectIFAType returns the IFA type based on device OS, make, and user-agent.
+func detectIFAType(ua, make, os string) string {
+	osL := strings.ToLower(os)
+	makeL := strings.ToLower(make)
+	uaL := strings.ToLower(ua)
+
+	switch {
+	case osL == "ios" || strings.Contains(uaL, "iphone") || strings.Contains(uaL, "ipad") || strings.Contains(uaL, "apple"):
+		return "idfa"
+	case osL == "android" || strings.Contains(uaL, "android"):
+		return "gaid"
+	case strings.Contains(uaL, "tizen") || strings.Contains(makeL, "samsung"):
+		return "tifa"
+	case strings.Contains(uaL, "webos") || strings.Contains(makeL, "lg"):
+		return "lgudid"
+	case strings.Contains(makeL, "roku"):
+		return "rida"
+	case strings.Contains(makeL, "amazon") || strings.Contains(uaL, "fire"):
+		return "afai"
+	case strings.Contains(makeL, "vizio"):
+		return "vtifa"
+	}
+	return ""
+}
+
+// ToAlpha3 converts ISO 3166-1 alpha-2 to alpha-3 country codes.
+func ToAlpha3(code string) string {
+	m := map[string]string{
+		"US": "USA", "GB": "GBR", "CA": "CAN", "AU": "AUS", "DE": "DEU",
+		"FR": "FRA", "JP": "JPN", "CN": "CHN", "IN": "IND", "BR": "BRA",
+		"MX": "MEX", "RU": "RUS", "KR": "KOR", "IT": "ITA", "ES": "ESP",
+		"NL": "NLD", "SE": "SWE", "NO": "NOR", "DK": "DNK", "FI": "FIN",
+		"PL": "POL", "AT": "AUT", "CH": "CHE", "BE": "BEL", "IE": "IRL",
+		"PT": "PRT", "NZ": "NZL", "SG": "SGP", "HK": "HKG", "TW": "TWN",
+		"IL": "ISR", "AE": "ARE", "SA": "SAU", "ZA": "ZAF", "AR": "ARG",
+		"CL": "CHL", "CO": "COL", "PH": "PHL", "TH": "THA", "MY": "MYS",
+		"ID": "IDN", "VN": "VNM", "TR": "TUR", "EG": "EGY", "NG": "NGA",
+		"KE": "KEN", "PK": "PAK", "BD": "BGD", "UA": "UKR", "RO": "ROU",
+		"CZ": "CZE", "HU": "HUN", "GR": "GRC", "HR": "HRV", "BG": "BGR",
+		"SK": "SVK", "SI": "SVN", "LT": "LTU", "LV": "LVA", "EE": "EST",
+		"PE": "PER", "EC": "ECU", "VE": "VEN", "DO": "DOM", "PR": "PRI",
+		"CR": "CRI", "PA": "PAN", "GT": "GTM", "CU": "CUB", "JM": "JAM",
+	}
+	if v, ok := m[strings.ToUpper(code)]; ok {
+		return v
+	}
+	return strings.ToUpper(code)
 }

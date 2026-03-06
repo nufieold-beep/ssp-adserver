@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"path"
 	"ssp/internal/openrtb"
+	"strconv"
 	"strings"
 )
 
@@ -66,32 +67,19 @@ func Build(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) string {
 func impressionBlock(evtBase string, bid *openrtb.Bid, req *openrtb.BidRequest) string {
 	var sb strings.Builder
 
-	// Build enriched impression URL with all tracking params
-	params := url.Values{}
-	params.Set("rid", req.ID)
-	params.Set("bid", bid.ID)
-	params.Set("price", fmt.Sprintf("%.6f", bid.Price))
-
-	// Creative
-	if bid.CrID != "" {
-		params.Set("crid", bid.CrID)
-	}
-	if len(bid.ADomain) > 0 {
-		params.Set("adom", bid.ADomain[0])
-	}
-	if bid.Seat != "" {
-		params.Set("cmp", bid.Seat)
+	if req == nil {
+		req = &openrtb.BidRequest{}
 	}
 
-	// Geo / Device
-	if req.Device.IP != "" {
-		params.Set("ip", req.Device.IP)
+	rid := req.ID
+	if req.User != nil && req.User.ID != "" {
+		rid = req.User.ID
+	} else if req.Device.IFA != "" {
+		rid = req.Device.IFA
 	}
-	if req.Device.Geo != nil && req.Device.Geo.Country != "" {
-		params.Set("ctry", req.Device.Geo.Country)
-	}
-
-	// Environment
+	cmp := bid.Seat
+	crid := bid.CrID
+	ip := req.Device.IP
 	env := "ctv"
 	switch req.Device.DeviceType {
 	case 1:
@@ -103,22 +91,69 @@ func impressionBlock(evtBase string, bid *openrtb.Bid, req *openrtb.BidRequest) 
 	case 5:
 		env = "tablet"
 	}
-	params.Set("env", env)
-
-	// Supply/App
-	params.Set("sr", "viadsmedia.com")
-	if req.App != nil && req.App.Bundle != "" {
-		params.Set("bndl", req.App.Bundle)
+	ctry := ""
+	if req.Device.Geo != nil {
+		ctry = metricCountryCode(req.Device.Geo.Country)
 	}
+	sr := supplyRef(evtBase)
+	bndl := ""
+	if req.App != nil {
+		bndl = req.App.Bundle
+	}
+	adom := ""
+	if len(bid.ADomain) > 0 {
+		adom = bid.ADomain[0]
+	}
+	price := strconv.FormatFloat(bid.Price, 'f', -1, 64)
 
-	fmt.Fprintf(&sb, "   <Impression><![CDATA[%s/impression?%s]]></Impression>\n",
-		evtBase, params.Encode())
+	trackingURL := fmt.Sprintf(
+		"%s/impression?rid=%s&cmp=%s&crid=%s&ctry=%s&ip=%s&env=%s&sr=%s&bndl=%s&adom=%s&price=%s",
+		evtBase,
+		url.QueryEscape(rid),
+		url.QueryEscape(cmp),
+		url.QueryEscape(crid),
+		url.QueryEscape(ctry),
+		url.QueryEscape(ip),
+		url.QueryEscape(env),
+		url.QueryEscape(sr),
+		url.QueryEscape(bndl),
+		url.QueryEscape(adom),
+		url.QueryEscape(price),
+	)
+
+	fmt.Fprintf(&sb, "   <Impression><![CDATA[%s]]></Impression>\n", trackingURL)
 
 	if bid.BURL != "" {
 		burl := bid.SubstituteMacros(bid.BURL)
 		fmt.Fprintf(&sb, "   <Impression><![CDATA[%s]]></Impression>\n", burl)
 	}
 	return sb.String()
+}
+
+func metricCountryCode(country string) string {
+	code := strings.ToUpper(strings.TrimSpace(country))
+	alpha3To2 := map[string]string{
+		"USA": "US", "GBR": "GB", "CAN": "CA", "AUS": "AU", "DEU": "DE",
+		"FRA": "FR", "JPN": "JP", "CHN": "CN", "IND": "IN", "BRA": "BR",
+	}
+	if v, ok := alpha3To2[code]; ok {
+		return v
+	}
+	return code
+}
+
+func supplyRef(evtBase string) string {
+	u, err := url.Parse(evtBase)
+	if err != nil || u.Host == "" {
+		return "viadsmedia.com"
+	}
+	if host := u.Hostname(); host != "" {
+		if strings.HasSuffix(host, ".viadsmedia.com") || host == "viadsmedia.com" {
+			return "viadsmedia.com"
+		}
+		return host
+	}
+	return "viadsmedia.com"
 }
 
 // buildInline creates a self-contained VAST InLine ad from a media file URL.

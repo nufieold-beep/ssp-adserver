@@ -13,26 +13,34 @@ import (
 	"ssp/internal/config"
 	"ssp/internal/eventbus"
 	"ssp/internal/floor"
-	"ssp/internal/geo"
 	ssphttp "ssp/internal/http"
 	"ssp/internal/monitor"
+	"ssp/internal/openrtb"
 	"ssp/internal/pipeline"
 )
 
 func main() {
-	// Initialize MaxMind GeoIP2 databases (optional – degrades gracefully)
-	geo.Init("data")
-	defer geo.Close()
-
 	configPath := "configs/bidders.yaml"
 
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		log.Printf("Warning: could not load config (%v), using defaults", err)
 		cfg = &config.Config{
-			Server: config.ServerConfig{Port: ":8080", DashboardPath: "dashboard.html"},
+			Server: config.ServerConfig{
+				Port:          ":8080",
+				DashboardPath: "dashboard.html",
+				ORTBBidFloor:  0.50,
+				ORTBMinDur:    5,
+				ORTBMaxDur:    30,
+			},
 		}
 	}
+
+	openrtb.ConfigureRequestDefaults(openrtb.RequestDefaults{
+		BidFloor: cfg.Server.ORTBBidFloor,
+		MinDur:   cfg.Server.ORTBMinDur,
+		MaxDur:   cfg.Server.ORTBMaxDur,
+	})
 
 	// Legacy bidder manager (backward-compatible)
 	mgr := bidder.NewManagerFromConfig(cfg)
