@@ -41,9 +41,11 @@ type Bid struct {
 }
 
 // SubstituteMacros replaces OpenRTB auction macros in a URL.
-func (b *Bid) SubstituteMacros(url string) string {
-	if url == "" || (!strings.Contains(url, "${") && !strings.Contains(url, "%24")) {
-		return url
+// Handles plain ${MACRO}, fully-encoded %24%7BMACRO%7D, and
+// partially-encoded %24{MACRO} variants automatically.
+func (b *Bid) SubstituteMacros(rawURL string) string {
+	if rawURL == "" || (!strings.Contains(rawURL, "${") && !strings.Contains(rawURL, "%24")) {
+		return rawURL
 	}
 
 	clearPrice := b.WinPrice
@@ -54,35 +56,39 @@ func (b *Bid) SubstituteMacros(url string) string {
 		clearPrice = clearPrice / (1 - b.Margin)
 	}
 
-	price := strings.NewReplacer(
-		"${AUCTION_PRICE}", formatPrice(clearPrice),
-		"%24%7BAUCTION_PRICE%7D", formatPrice(clearPrice),
-		"%24{AUCTION_PRICE}", formatPrice(clearPrice),
-		"${AUCTION_ID}", b.ID,
-		"%24%7BAUCTION_ID%7D", b.ID,
-		"%24{AUCTION_ID}", b.ID,
-		"${AUCTION_BID_ID}", b.ID,
-		"%24%7BAUCTION_BID_ID%7D", b.ID,
-		"%24{AUCTION_BID_ID}", b.ID,
-		"${AUCTION_IMP_ID}", b.ImpID,
-		"%24%7BAUCTION_IMP_ID%7D", b.ImpID,
-		"%24{AUCTION_IMP_ID}", b.ImpID,
-		"${AUCTION_SEAT_ID}", b.Seat,
-		"%24%7BAUCTION_SEAT_ID%7D", b.Seat,
-		"%24{AUCTION_SEAT_ID}", b.Seat,
-		"${AUCTION_CURRENCY}", "USD",
-		"%24%7BAUCTION_CURRENCY%7D", "USD",
-		"%24{AUCTION_CURRENCY}", "USD",
-	)
-	replaced := price.Replace(url)
-	if !strings.HasPrefix(replaced, "http://") && !strings.HasPrefix(replaced, "https://") {
-		if strings.HasPrefix(replaced, "//") {
-			replaced = "https:" + replaced
-		} else {
-			replaced = "https://" + replaced
-		}
+	// Canonical macro → value map.
+	macros := map[string]string{
+		"AUCTION_PRICE":    formatPrice(clearPrice),
+		"AUCTION_ID":       b.ID,
+		"AUCTION_BID_ID":   b.ID,
+		"AUCTION_IMP_ID":   b.ImpID,
+		"AUCTION_SEAT_ID":  b.Seat,
+		"AUCTION_CURRENCY": "USD",
 	}
-	return replaced
+
+	// Build replacer pairs covering all three encoding forms.
+	pairs := make([]string, 0, len(macros)*6)
+	for macro, val := range macros {
+		pairs = append(pairs,
+			"${"+macro+"}", val,                          // plain
+			"%24%7B"+macro+"%7D", val,                    // fully encoded
+			"%24{"+macro+"}", val,                        // partially encoded
+		)
+	}
+
+	replaced := strings.NewReplacer(pairs...).Replace(rawURL)
+	return ensureScheme(replaced)
+}
+
+// ensureScheme prepends https:// if the URL has no scheme.
+func ensureScheme(u string) string {
+	if strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://") {
+		return u
+	}
+	if strings.HasPrefix(u, "//") {
+		return "https:" + u
+	}
+	return "https://" + u
 }
 
 func formatPrice(p float64) string {
