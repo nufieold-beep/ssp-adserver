@@ -8,6 +8,7 @@ GO_VERSION="1.24.0"
 GO_MIN_VERSION="1.24"
 RUNTIME_CONFIG_DIR="/etc/ssp"
 RUNTIME_CONFIG_PATH="${RUNTIME_CONFIG_DIR}/bidders.yaml"
+AUTH_ENV_FILE="${RUNTIME_CONFIG_DIR}/ssp.env"
 REPO_CONFIG_REL="configs/bidders.yaml"
 
 export PATH="/usr/local/go/bin:${PATH}"
@@ -96,6 +97,13 @@ systemctl stop "$SERVICE_NAME" 2>/dev/null || true
 pkill ssp 2>/dev/null || true
 fuser -k 8080/tcp 2>/dev/null || true
 
+# Persist API key only when explicitly provided to deploy.sh.
+if [ -n "${SSP_API_KEY:-}" ]; then
+  printf 'SSP_API_KEY=%s\n' "${SSP_API_KEY}" > "${AUTH_ENV_FILE}"
+  chmod 600 "${AUTH_ENV_FILE}"
+  echo "[5/5] API key updated in ${AUTH_ENV_FILE}"
+fi
+
 # Create systemd service
 echo "[5/5] Setting up systemd service..."
 cat > /etc/systemd/system/${SERVICE_NAME}.service << EOF
@@ -108,7 +116,7 @@ Type=simple
 WorkingDirectory=${INSTALL_DIR}
 ExecStart=${INSTALL_DIR}/ssp
 Environment=SSP_CONFIG_PATH=${RUNTIME_CONFIG_PATH}
-Environment=SSP_API_KEY=${SSP_API_KEY:-change-this-to-a-secret}
+EnvironmentFile=-${AUTH_ENV_FILE}
 Restart=always
 RestartSec=5
 LimitNOFILE=65535

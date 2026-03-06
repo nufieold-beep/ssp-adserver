@@ -2,6 +2,7 @@ package http
 
 import (
 	"os"
+	"strings"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
@@ -11,11 +12,11 @@ import (
 // The key is read from the SSP_API_KEY environment variable.
 // If SSP_API_KEY is not set, requests pass through (dashboard login provides auth).
 func AdminAPIKey() fiber.Handler {
-	key := os.Getenv("SSP_API_KEY")
+	key := strings.TrimSpace(os.Getenv("SSP_API_KEY"))
 	return func(c *fiber.Ctx) error {
 		// If no API key is configured, allow all requests through.
 		// The dashboard login system provides its own authentication layer.
-		if key == "" {
+		if key == "" || key == "change-this-to-a-secret" || key == "changeme" {
 			return c.Next()
 		}
 		auth := c.Get("Authorization")
