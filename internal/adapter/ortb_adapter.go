@@ -172,15 +172,21 @@ func sanitizeStringList(in []string) []string {
 
 func normalizeListToken(v string) string {
 	v = strings.TrimSpace(v)
+	v = strings.ReplaceAll(v, `\\"`, `"`)
+	v = strings.ReplaceAll(v, `\"`, `"`)
+	v = strings.ReplaceAll(v, `\'`, `'`)
 	for {
 		prev := v
 		v = strings.TrimSpace(v)
-		v = strings.TrimPrefix(v, `\\"`)
-		v = strings.TrimSuffix(v, `\\"`)
+		v = strings.TrimPrefix(v, `\"`)
+		v = strings.TrimSuffix(v, `\"`)
+		v = strings.TrimPrefix(v, `"`)
+		v = strings.TrimSuffix(v, `"`)
 		v = strings.Trim(v, `"'`)
 		if v == prev {
 			break
 		}
 	}
+	v = strings.TrimSpace(v)
 	return v
 }
