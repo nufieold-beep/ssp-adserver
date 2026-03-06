@@ -183,8 +183,7 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 		return result
 	}
 
-	// ── Stage 9: Billing & metrics ──
-	p.Metrics.RecordImpression()
+	// ── Stage 9: Billing & metrics (impression counted on client-side pixel fire) ──
 	p.Metrics.RecordWin(auctionResult.WinPrice)
 	p.Metrics.RecordSpend(auctionResult.WinPrice * 0.85) // Record Net Revenue
 	p.Metrics.RecordVastStart()

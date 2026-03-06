@@ -535,8 +535,7 @@ func vastHandler(mgr *bidder.Manager, metrics *monitor.Metrics, s *store, auctio
 			return c.Status(500).JSON(fiber.Map{"error": "Failed to build VAST"})
 		}
 
-		// Record win metrics
-		metrics.RecordImpression()
+		// Record win metrics (impression counted on client-side pixel fire)
 		metrics.RecordWin(result.WinPrice)
 		metrics.RecordSpend(result.WinPrice * 0.85) // Record Net Revenue
 		metrics.RecordVastStart()
