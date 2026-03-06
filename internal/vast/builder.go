@@ -174,6 +174,8 @@ func buildInline(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) stri
 	crID := html.EscapeString(bid.CrID)
 
 	admURL := strings.TrimSpace(bid.Adm)
+	admURL = bid.SubstituteMacros(admURL) // Evaluate macros natively within direct media URLs
+	
 	mimeType := "video/mp4"
 	ext := strings.ToLower(path.Ext(strings.SplitN(admURL, "?", 2)[0]))
 	switch ext {
@@ -219,6 +221,9 @@ func buildWrapper(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) str
 	evtBase := fmt.Sprintf("%s/api/v1/event", baseURL)
 	impressions := impressionBlock(evtBase, bid, req)
 	bidID := html.EscapeString(bid.ID)
+	
+	admURL := strings.TrimSpace(bid.Adm)
+	admURL = bid.SubstituteMacros(admURL) // Resolve formatting inside the tag URI string
 
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <VAST version="3.0">
@@ -229,7 +234,7 @@ func buildWrapper(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) str
 %s   <Creatives></Creatives>
   </Wrapper>
  </Ad>
-</VAST>`, bidID, strings.TrimSpace(bid.Adm), impressions)
+</VAST>`, bidID, admURL, impressions)
 }
 
 // buildPassthrough takes a complete VAST XML document from the DSP and
