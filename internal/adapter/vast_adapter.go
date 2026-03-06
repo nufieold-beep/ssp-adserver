@@ -2,10 +2,12 @@ package adapter
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"ssp/internal/httputil"
 	"ssp/internal/openrtb"
 	"ssp/internal/vast"
+	"strings"
 )
 
 // VASTAdapter implements DemandAdapter for VAST tag demand sources.
@@ -56,14 +58,34 @@ func (a *VASTAdapter) RequestBids(ctx context.Context, req *openrtb.BidRequest) 
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusNoContent {
+		return &BidResult{AdapterID: a.id, NoBid: true}, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := httputil.ReadResponseBody(resp)
+		msg := strings.TrimSpace(string(body))
+		if len(msg) > 240 {
+			msg = msg[:240]
+		}
+		if msg == "" {
+			msg = http.StatusText(resp.StatusCode)
+		}
+		return nil, fmt.Errorf("vast adapter %s returned HTTP %d: %s", a.id, resp.StatusCode, msg)
+	}
+
 	body, err := httputil.ReadResponseBody(resp)
 	if err != nil {
 		return nil, err
 	}
 
-	adm := string(body)
+	adm := strings.TrimSpace(string(body))
 	if adm == "" {
 		return &BidResult{AdapterID: a.id, NoBid: true}, nil
+	}
+
+	lowAdm := strings.ToLower(adm)
+	if !strings.Contains(lowAdm, "<vast") && !strings.Contains(lowAdm, "<vmap") {
+		return nil, fmt.Errorf("vast adapter %s returned non-VAST payload", a.id)
 	}
 
 	price := a.cpm

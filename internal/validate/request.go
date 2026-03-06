@@ -7,22 +7,34 @@ import (
 
 // Request validates a BidRequest per PDF spec section 6:
 // - must have at least one imp
-// - must have device.ip
-// - must include video specs for CTV
+// - should include device.ip (best effort fallback when missing)
+// - must include at least one video imp for CTV/in-app video
 func Request(req *openrtb.BidRequest) error {
+	if req == nil {
+		return errors.New("request is nil")
+	}
 	if len(req.Imp) == 0 {
 		return errors.New("must have at least one imp")
 	}
+
+	// Some CTV integrations can omit IP at the edge (privacy/proxy setups).
+	// Keep the request serviceable instead of hard-failing to no-fill.
 	if req.Device.IP == "" {
-		return errors.New("device.ip is required")
+		req.Device.IP = "0.0.0.0"
 	}
-	for _, imp := range req.Imp {
-		if imp.Video == nil {
-			return errors.New("video spec required for CTV impressions")
+
+	hasVideoImp := false
+	for i := range req.Imp {
+		if req.Imp[i].Video == nil {
+			continue
 		}
-		if len(imp.Video.Mimes) == 0 {
-			return errors.New("video.mimes is required")
+		hasVideoImp = true
+		if len(req.Imp[i].Video.Mimes) == 0 {
+			req.Imp[i].Video.Mimes = []string{"video/mp4", "video/webm", "application/x-mpegURL"}
 		}
+	}
+	if !hasVideoImp {
+		return errors.New("at least one video imp is required for CTV/in-app")
 	}
 	return nil
 }

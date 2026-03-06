@@ -36,7 +36,7 @@ const (
 
 func resolveTimeout(timeoutMs int) time.Duration {
 	if timeoutMs <= 0 {
-		return 800 * time.Millisecond
+		return 500 * time.Millisecond
 	}
 	return time.Duration(timeoutMs) * time.Millisecond
 }
@@ -47,6 +47,7 @@ type BidResult struct {
 	Bids      []openrtb.Bid
 	Latency   time.Duration
 	NoBid     bool
+	TimedOut  bool
 	Error     error
 }
 
@@ -198,7 +199,9 @@ func (r *Registry) dispatchBids(ctx context.Context, req *openrtb.BidRequest, tm
 	defer cancel()
 
 	resultCh := make(chan *BidResult, len(adapters))
+	pending := make(map[string]struct{}, len(adapters))
 	for _, adapter := range adapters {
+		pending[adapter.ID()] = struct{}{}
 		go func(a DemandAdapter) {
 			start := time.Now()
 			result, err := a.RequestBids(ctx, req)
@@ -222,8 +225,12 @@ func (r *Registry) dispatchBids(ctx context.Context, req *openrtb.BidRequest, tm
 		select {
 		case br := <-resultCh:
 			out = append(out, br)
+			delete(pending, br.AdapterID)
 			remaining--
 		case <-ctx.Done():
+			for adapterID := range pending {
+				out = append(out, &BidResult{AdapterID: adapterID, Error: context.DeadlineExceeded, TimedOut: true, NoBid: true})
+			}
 			return out
 		}
 	}

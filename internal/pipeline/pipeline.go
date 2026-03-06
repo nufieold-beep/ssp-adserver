@@ -67,7 +67,7 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 	}})
 
 	p.Metrics.AddTrafficEvent(monitor.TrafficEvent{
-		Type: "ortb_request", RequestID: req.ID, Env: detectEnv(req),
+		Type: "ortb_request", RequestID: req.ID, Env: detectRequestEnvironment(req),
 		Details: fmt.Sprintf("bundle=%s tag=%s", bundle, req.Imp[0].TagID),
 	})
 
@@ -107,17 +107,23 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 	p.Metrics.RecordBidLatency(float64(result.BidLatency.Milliseconds()))
 
 	// ── Stage 4: Collect and flatten bids ──
-	var collectedBids []openrtb.Bid
-	hadAdapterErrors := false
+	var candidateBids []openrtb.Bid
+	adapterErrorCount := 0
+	adapterTimeoutCount := 0
+	adapterNoBidCount := 0
 	for _, br := range bidResults {
 		if br.Error != nil {
-			hadAdapterErrors = true
+			adapterErrorCount++
+			if br.TimedOut {
+				adapterTimeoutCount++
+			}
 			p.Bus.Publish(eventbus.Event{Type: eventbus.EvtError, Data: map[string]interface{}{
 				"request_id": req.ID, "adapter": br.AdapterID, "error": br.Error.Error(),
 			}})
 			continue
 		}
 		if br.NoBid {
+			adapterNoBidCount++
 			p.Bus.Publish(eventbus.Event{Type: eventbus.EvtNoBid, Data: map[string]interface{}{
 				"request_id": req.ID, "adapter": br.AdapterID,
 			}})
@@ -129,21 +135,23 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 				"bid_price": bid.Price, "bid_id": bid.ID, "latency_ms": br.Latency.Milliseconds(),
 			}})
 		}
-		collectedBids = append(collectedBids, br.Bids...)
+		candidateBids = append(candidateBids, br.Bids...)
 	}
 
-	if len(collectedBids) == 0 {
-		if hadAdapterErrors {
+	if len(candidateBids) == 0 {
+		reasonDetails := buildNoBidReasonDetails(len(bidResults), adapterErrorCount, adapterTimeoutCount, adapterNoBidCount)
+
+		if adapterErrorCount > 0 {
 			p.Metrics.RecordError()
 			p.Metrics.AddTrafficEvent(monitor.TrafficEvent{
-				Type: "adapter_error", RequestID: req.ID, Env: detectEnv(req),
-				Details: "all eligible demand adapters failed",
+				Type: "adapter_error", RequestID: req.ID, Env: detectRequestEnvironment(req),
+				Details: reasonDetails,
 			})
 		}
 		p.Metrics.RecordNoBid()
 		p.Metrics.AddTrafficEvent(monitor.TrafficEvent{
-			Type: "no_bid", RequestID: req.ID, Env: detectEnv(req),
-			Details: "no bids received from demand adapters",
+			Type: "no_bid", RequestID: req.ID, Env: detectRequestEnvironment(req),
+			Details: reasonDetails,
 		})
 		result.NoBid = true
 		result.VAST = vast.BuildNoAd()
@@ -152,8 +160,8 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 	}
 
 	// ── Stage 5: Ad quality / brand safety scan ──
-	collectedBids = p.AQScanner.Filter(collectedBids, req)
-	if len(collectedBids) == 0 {
+	candidateBids = p.AQScanner.Filter(candidateBids, req)
+	if len(candidateBids) == 0 {
 		p.Metrics.RecordNoBid()
 		result.NoBid = true
 		result.VAST = vast.BuildNoAd()
@@ -163,12 +171,12 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 
 	// ── Stage 6: Open-market auction ──
 	auctionType := p.AuctionType
-	auctionResult := auction.Run(collectedBids, req.Imp[0].BidFloor, auctionType)
+	auctionResult := auction.Run(candidateBids, req.Imp[0].BidFloor, auctionType)
 
 	p.Bus.PublishSync(eventbus.Event{Type: eventbus.EvtAuctionEnd, Data: map[string]interface{}{
-		"request_id": req.ID, "winner_id": safeWinnerID(auctionResult),
+		"request_id": req.ID, "winner_id": winnerIDOrEmpty(auctionResult),
 		"win_price": auctionResult.WinPrice, "auction_type": auctionType,
-		"bid_count": len(collectedBids),
+		"bid_count": len(candidateBids),
 	}})
 
 	if auctionResult.Winner == nil {
@@ -202,7 +210,7 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 	p.Metrics.RecordVastStart()
 
 	p.Metrics.AddTrafficEvent(monitor.TrafficEvent{
-		Type: "ortb_response", RequestID: req.ID, Env: detectEnv(req),
+		Type: "ortb_response", RequestID: req.ID, Env: detectRequestEnvironment(req),
 		Details: fmt.Sprintf("winner=%s price=%.2f clear=%.2f type=%s nurl=%v burl=%v",
 			winner.ID, winner.Price, auctionResult.WinPrice, auctionType,
 			winner.NURL != "", winner.BURL != ""),
@@ -217,7 +225,7 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 	return result
 }
 
-func detectEnv(req *openrtb.BidRequest) string {
+func detectRequestEnvironment(req *openrtb.BidRequest) string {
 	switch req.Device.DeviceType {
 	case 3:
 		return "CTV"
@@ -230,9 +238,17 @@ func detectEnv(req *openrtb.BidRequest) string {
 	}
 }
 
-func safeWinnerID(r *auction.AuctionResult) string {
+func winnerIDOrEmpty(r *auction.AuctionResult) string {
 	if r.Winner != nil {
 		return r.Winner.ID
 	}
 	return ""
+}
+
+func buildNoBidReasonDetails(totalAdapters, errorCount, timeoutCount, noBidCount int) string {
+	if totalAdapters == 0 {
+		return "no eligible demand adapters (check mapping/status/targeting/qps)"
+	}
+	return fmt.Sprintf("no winning bids: adapters=%d errors=%d timeouts=%d explicit_no_bids=%d",
+		totalAdapters, errorCount, timeoutCount, noBidCount)
 }

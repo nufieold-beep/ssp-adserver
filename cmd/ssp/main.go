@@ -4,6 +4,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -55,6 +56,11 @@ func main() {
 
 	// Register adapters from config
 	for _, ac := range cfg.Adapters {
+		if isPlaceholderEndpoint(ac.Endpoint) {
+			log.Printf("Skipping adapter %q: endpoint is placeholder or empty", ac.Name)
+			continue
+		}
+
 		acfg := &adapter.AdapterConfig{
 			ID:          ac.ID,
 			Name:        ac.Name,
@@ -87,6 +93,11 @@ func main() {
 		if bc.Status == 0 {
 			continue
 		}
+		if isPlaceholderEndpoint(bc.Endpoint) {
+			log.Printf("Skipping bidder %q: endpoint is placeholder or empty", bc.Name)
+			continue
+		}
+
 		id := "yaml-" + bc.Name
 		acfg := &adapter.AdapterConfig{
 			ID: id, Name: bc.Name,
@@ -164,4 +175,18 @@ func main() {
 	if err := app.Listen(cfg.Server.Port); err != nil {
 		log.Printf("Server stopped: %v", err)
 	}
+}
+
+func isPlaceholderEndpoint(endpoint string) bool {
+	v := strings.ToLower(strings.TrimSpace(endpoint))
+	if v == "" {
+		return true
+	}
+	markers := []string{"example-dsp.com", "ads.network.com", "replace-me", "changeme", "change-this", "<your"}
+	for _, marker := range markers {
+		if strings.Contains(v, marker) {
+			return true
+		}
+	}
+	return false
 }

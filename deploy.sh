@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 REPO="https://github.com/nufieold-beep/ssp-adserver.git"
 INSTALL_DIR="/opt/ssp"
@@ -15,6 +15,19 @@ export PATH="/usr/local/go/bin:${PATH}"
 
 version_ge() {
   [ "$(printf '%s\n' "$1" "$2" | sort -V | head -n1)" = "$2" ]
+}
+
+validate_runtime_config() {
+  if [ ! -f "${RUNTIME_CONFIG_PATH}" ]; then
+    echo "[!] Runtime config not found: ${RUNTIME_CONFIG_PATH}"
+    exit 1
+  fi
+
+  if grep -Eqi 'example-dsp\.com|ads\.network\.com|replace[-_ ]?me|changeme|change-this|<your' "${RUNTIME_CONFIG_PATH}"; then
+    echo "[!] Runtime config still contains placeholder values."
+    echo "    Update ${RUNTIME_CONFIG_PATH} with real production endpoints/credentials before deploying."
+    exit 1
+  fi
 }
 
 install_go() {
@@ -86,6 +99,8 @@ else
   fi
 fi
 
+validate_runtime_config
+
 # Build
 echo "[4/5] Building SSP binary..."
 cd "$INSTALL_DIR"
@@ -128,6 +143,21 @@ EOF
 systemctl daemon-reload
 systemctl enable "$SERVICE_NAME"
 systemctl start "$SERVICE_NAME"
+
+echo "[6/6] Verifying service health..."
+if command -v curl >/dev/null 2>&1; then
+  if ! curl -fsS "http://127.0.0.1:8080/health" >/dev/null; then
+    echo "[!] Health check failed at /health"
+    journalctl -u "$SERVICE_NAME" -n 50 --no-pager || true
+    exit 1
+  fi
+else
+  if ! systemctl is-active --quiet "$SERVICE_NAME"; then
+    echo "[!] Service is not active after start"
+    journalctl -u "$SERVICE_NAME" -n 50 --no-pager || true
+    exit 1
+  fi
+fi
 
 echo ""
 echo "=== Deploy complete ==="

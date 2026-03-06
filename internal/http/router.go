@@ -179,10 +179,10 @@ type store struct {
 
 func newStore() *store {
 	return &store{
-		campaigns:            map[int]*Campaign{1: {ID: 1, Name: "CTV Demo", Status: 1, Bid: 7.0, BidFloor: 5.0, BudgetDaily: 100, Env: "1"}, 2: {ID: 2, Name: "InApp Test", Status: 0, Bid: 5.0, BidFloor: 3.0, BudgetDaily: 50, Env: "2"}},
-		nextCampaignID:       3,
-		advertisers:          map[int]*Advertiser{1: {ID: 1, Name: "Demo Advertiser", Company: "Demo Inc", Status: 1}},
-		nextAdvertiserID:     2,
+		campaigns:            make(map[int]*Campaign),
+		nextCampaignID:       1,
+		advertisers:          make(map[int]*Advertiser),
+		nextAdvertiserID:     1,
 		supplyTags:           make(map[int]*SupplyTag),
 		nextSupplyTagID:      1,
 		supplyBySlotID:       make(map[string]*SupplyTag),
@@ -234,18 +234,29 @@ func (s *store) rebuildMappingIndexLocked() {
 	}
 }
 
-// lookupSupplyByTag checks whether a tag name/slot_id matches any registered supply source.
-// Returns the matching SupplyTag or nil if unknown.
-func (s *store) lookupSupplyByTag(tag string) *SupplyTag {
+func (s *store) hasActiveSupplyTags() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if t, ok := s.supplyBySlotID[tag]; ok {
+	for _, t := range s.supplyTags {
+		if t.Status == 1 {
+			return true
+		}
+	}
+	return false
+}
+
+// lookupActiveSupplyTagByKey checks whether a tag name/slot_id/id matches
+// any active registered supply source.
+func (s *store) lookupActiveSupplyTagByKey(tagKey string) *SupplyTag {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if t, ok := s.supplyBySlotID[tagKey]; ok {
 		return t
 	}
-	if t, ok := s.supplyByName[tag]; ok {
+	if t, ok := s.supplyByName[tagKey]; ok {
 		return t
 	}
-	if t, ok := s.supplyByIDStr[tag]; ok {
+	if t, ok := s.supplyByIDStr[tagKey]; ok {
 		return t
 	}
 	return nil
@@ -379,6 +390,13 @@ func (s *store) recordAdDecision(req *openrtb.BidRequest, winner *openrtb.Bid, w
 	if len(s.adDecisions) > 500 {
 		s.adDecisions = s.adDecisions[len(s.adDecisions)-500:]
 	}
+}
+
+func normalizeDemandTimeoutMs(timeoutMs int) int {
+	if timeoutMs <= 0 {
+		return 500
+	}
+	return timeoutMs
 }
 
 // ── Router ──
@@ -1268,6 +1286,7 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 				return c.Status(400).JSON(fiber.Map{"error": "Invalid endpoint URL: " + err.Error()})
 			}
 		}
+		e.Timeout = normalizeDemandTimeoutMs(e.Timeout)
 		s.mu.Lock()
 		e.ID = s.nextDemandEndpointID
 		s.nextDemandEndpointID++
@@ -1280,10 +1299,7 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 		// Live-register as enterprise adapter for real-time parallel bidding
 		if eDeps != nil && eDeps.Registry != nil && e.Status == 1 && e.URL != "" {
 			adapterID := fmt.Sprintf("demand-ep-%d", e.ID)
-			timeout := e.Timeout
-			if timeout == 0 {
-				timeout = 800
-			}
+			timeout := normalizeDemandTimeoutMs(e.Timeout)
 			acfg := &adapter.AdapterConfig{
 				ID: adapterID, Name: e.Name,
 				Type:     adapter.AdapterType(e.Integration),
@@ -1323,6 +1339,9 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 			e.Name = update.Name
 		}
 		if update.URL != "" {
+			if err := httputil.ValidateDemandURL(update.URL); err != nil {
+				return c.Status(400).JSON(fiber.Map{"error": "Invalid endpoint URL: " + err.Error()})
+			}
 			e.URL = update.URL
 		}
 		if update.Status != 0 {
@@ -1335,7 +1354,7 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 			e.Margin = update.Margin
 		}
 		if update.Timeout != 0 {
-			e.Timeout = update.Timeout
+			e.Timeout = normalizeDemandTimeoutMs(update.Timeout)
 		}
 		if update.QPS != 0 {
 			e.QPS = update.QPS
@@ -1358,10 +1377,7 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 		// Re-register adapter with updated config for live hot-reload
 		if eDeps != nil && eDeps.Registry != nil && e.URL != "" {
 			adapterID := fmt.Sprintf("demand-ep-%d", id)
-			timeout := e.Timeout
-			if timeout == 0 {
-				timeout = 800
-			}
+			timeout := normalizeDemandTimeoutMs(e.Timeout)
 			acfg := &adapter.AdapterConfig{
 				ID: adapterID, Name: e.Name,
 				Type:     adapter.AdapterType(e.Integration),
@@ -1451,7 +1467,7 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 			acfg := &adapter.AdapterConfig{
 				ID: adapterID, Name: t.Name,
 				Type:     adapter.TypeVAST,
-				Endpoint: t.URL, TimeoutMs: 800,
+				Endpoint: t.URL, TimeoutMs: normalizeDemandTimeoutMs(0),
 				Floor: t.Floor, Margin: t.Margin,
 				Status: 1,
 			}
@@ -1477,6 +1493,9 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 			t.Name = update.Name
 		}
 		if update.URL != "" {
+			if err := httputil.ValidateDemandURL(update.URL); err != nil {
+				return c.Status(400).JSON(fiber.Map{"error": "Invalid VAST tag URL: " + err.Error()})
+			}
 			t.URL = update.URL
 		}
 		if update.Status != 0 {
@@ -1498,7 +1517,7 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 			acfg := &adapter.AdapterConfig{
 				ID: adapterID, Name: t.Name,
 				Type:     adapter.TypeVAST,
-				Endpoint: t.URL, TimeoutMs: 800,
+				Endpoint: t.URL, TimeoutMs: normalizeDemandTimeoutMs(0),
 				Floor: t.Floor, Margin: t.Margin,
 				Status: t.Status,
 			}
@@ -1644,21 +1663,34 @@ func generateVastTagURL(t *SupplyTag) string {
 
 func supplyTagVastHandler(p *pipeline.Pipeline, metrics *monitor.Metrics, s *store) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		// Look up supply tag by sid — reject unknown/missing sources
+		// In bootstrap mode (no configured supply tags), accept requests without
+		// source gating so traffic can flow during initial production bring-up.
+		requireKnownSupply := s.hasActiveSupplyTags()
+
 		sidStr := c.Query("sid")
-		if sidStr == "" {
+		sid := 0
+		var tag *SupplyTag
+		if sidStr != "" {
+			parsedSID, err := strconv.Atoi(sidStr)
+			if err == nil && parsedSID > 0 {
+				sid = parsedSID
+				s.mu.RLock()
+				tag = s.supplyTags[sid]
+				s.mu.RUnlock()
+			}
+		}
+
+		if requireKnownSupply && sidStr == "" {
 			return c.Status(403).JSON(fiber.Map{"error": "Unknown supply source: missing sid"})
 		}
-		sid, _ := strconv.Atoi(sidStr)
-		s.mu.RLock()
-		tag := s.supplyTags[sid]
-		s.mu.RUnlock()
-		if tag == nil || tag.Status != 1 {
+		if requireKnownSupply && (tag == nil || tag.Status != 1) {
 			return c.Status(403).JSON(fiber.Map{"error": "Unknown supply source"})
 		}
 
 		req := openrtb.BuildFromHTTP(c)
-		enrichFromSupplyTag(&req, tag)
+		if tag != nil {
+			enrichFromSupplyTag(&req, tag)
+		}
 
 		if err := validate.Request(&req); err != nil {
 			metrics.RecordError()
@@ -1727,23 +1759,25 @@ func supplyTagVastHandler(p *pipeline.Pipeline, metrics *monitor.Metrics, s *sto
 
 func pipelineHandler(p *pipeline.Pipeline, metrics *monitor.Metrics, s *store) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		// Validate that the tag belongs to a registered supply source
-		tag := c.Params("tag")
-		if tag == "" {
-			tag = c.Query("tag")
+		// Validate source only when active supply tags exist.
+		requireKnownSupply := s.hasActiveSupplyTags()
+		tagKey := c.Params("tag")
+		if tagKey == "" {
+			tagKey = c.Query("tag")
 		}
+
 		var supplyTag *SupplyTag
-		if tag != "" {
-			supplyTag = s.lookupSupplyByTag(tag)
-			if supplyTag == nil {
-				return c.Status(403).JSON(fiber.Map{"error": "Unknown supply source"})
-			}
-		} else {
+		if tagKey != "" {
+			supplyTag = s.lookupActiveSupplyTagByKey(tagKey)
+		}
+		if requireKnownSupply && supplyTag == nil {
 			return c.Status(403).JSON(fiber.Map{"error": "Unknown supply source"})
 		}
 
 		req := openrtb.BuildFromHTTP(c)
-		enrichFromSupplyTag(&req, supplyTag)
+		if supplyTag != nil {
+			enrichFromSupplyTag(&req, supplyTag)
+		}
 
 		if err := validate.Request(&req); err != nil {
 			metrics.RecordError()
