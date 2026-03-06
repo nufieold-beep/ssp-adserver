@@ -236,6 +236,8 @@ func buildWrapper(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) str
 // injects SSP impression + tracking pixels into it.
 func buildPassthrough(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) string {
 	xml := strings.TrimSpace(bid.Adm)
+	xml = bid.SubstituteMacros(xml) // Resolve ${AUCTION_PRICE} and others embedded natively in VAST XML
+	
 	evtBase := fmt.Sprintf("%s/api/v1/event", baseURL)
 	impressions := impressionBlock(evtBase, bid, req)
 
