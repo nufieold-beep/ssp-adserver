@@ -287,13 +287,13 @@ func enrichFromSupplyTag(req *openrtb.BidRequest, tag *SupplyTag) {
 			req.Device.Geo = &openrtb.Geo{Country: cc, Type: 2}
 		}
 	}
-	// App fields from supply tag config
+	// App fields from supply tag config (tag config is source of truth)
 	if req.App != nil {
-		if tag.AppBundle != "" && (req.App.Bundle == "" || req.App.Bundle == "{app_bundle}") {
+		if tag.AppBundle != "" {
 			req.App.Bundle = tag.AppBundle
 			req.App.ID = tag.AppBundle
 		}
-		if tag.AppName != "" && (req.App.Name == "" || req.App.Name == "{app_name}") {
+		if tag.AppName != "" {
 			req.App.Name = tag.AppName
 		}
 		if tag.Domain != "" {
