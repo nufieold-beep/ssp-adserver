@@ -19,7 +19,10 @@ import (
 )
 
 func main() {
-	configPath := "configs/bidders.yaml"
+	configPath := os.Getenv("SSP_CONFIG_PATH")
+	if configPath == "" {
+		configPath = "configs/bidders.yaml"
+	}
 
 	cfg, err := config.Load(configPath)
 	if err != nil {
