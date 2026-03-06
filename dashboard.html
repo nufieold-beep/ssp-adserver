@@ -798,7 +798,20 @@ textarea{resize:vertical;min-height:68px}
 // ═══════════════════════════════════════════
 // CONFIG
 // ═══════════════════════════════════════════
-let API_BASE = localStorage.getItem('viadsmedia_api_base') || window.location.origin;
+function normalizeApiBase(base){
+  const raw=(base||'').trim();
+  if(!raw) return window.location.origin;
+  if(raw==='/'||raw==='.') return window.location.origin;
+  if(/^https?:\/\//i.test(raw)) return raw.replace(/\/+$/,'');
+  if(raw.startsWith('//')) return (window.location.protocol+raw).replace(/\/+$/,'');
+  if(raw.startsWith('/')) return (window.location.origin+raw).replace(/\/+$/,'');
+  return (window.location.origin+'/'+raw.replace(/^\/+|\/+$/g,'')).replace(/\/+$/,'');
+}
+function apiURL(path){
+  const p=path&&path.startsWith('/')?path:`/${path||''}`;
+  return `${API_BASE}${p}`;
+}
+let API_BASE = normalizeApiBase(localStorage.getItem('viadsmedia_api_base') || window.location.origin);
 let API_KEY = localStorage.getItem('viadsmedia_api_key') || '';
 const SD = '/api/v1/supply-demand';
 const STATUS_MAP = {0:'Inactive',1:'Active',2:'Paused'};
@@ -810,14 +823,15 @@ let inspectorAutoInterval = null;
 // HELPERS
 // ═══════════════════════════════════════════
 async function api(path, opts = {}) {
-  const url = `${API_BASE}${path}`;
+  const url = apiURL(path);
   const authHeaders = API_KEY ? {'Content-Type':'application/json','Authorization':'Bearer '+API_KEY} : {'Content-Type':'application/json'};
   const cfg = {headers:{...authHeaders,...opts.headers},...opts};
   if (opts.body && typeof opts.body === 'object') cfg.body = JSON.stringify(opts.body);
   try {
     const res = await fetch(url, cfg);
     if (res.status === 204) return null;
-    const data = await res.json();
+    let data = {};
+    try { data = await res.json(); } catch(_) { data = {}; }
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     return data;
   } catch(e) { toast(e.message,'error'); throw e; }
@@ -1389,7 +1403,7 @@ async function saveSettings() {
 
 function saveLocalSettings() {
   const val=$v('apiBaseInput').trim();
-  if(val){localStorage.setItem('viadsmedia_api_base',val);API_BASE=val;}
+  if(val){localStorage.setItem('viadsmedia_api_base',val);API_BASE=normalizeApiBase(val);}
   else{localStorage.removeItem('viadsmedia_api_base');API_BASE=window.location.origin;}
   const key=$v('apiKeyInput').trim();
   if(key){localStorage.setItem('viadsmedia_api_key',key);API_KEY=key;}
@@ -1477,7 +1491,7 @@ function doLogin(){
   const u=$v('loginUser').trim();
   const p=$v('loginPass');
   if(!u||!p){$('loginError').style.display='block';return;}
-  fetch((typeof API_BASE!=='undefined'?API_BASE:window.location.origin)+'/api/v1/auth/login',{
+  fetch(apiURL('/api/v1/auth/login'),{
     method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({username:u,password:p})
   }).then(r=>{
@@ -1510,11 +1524,20 @@ async function changePassword(){
   if(newPass!==confirm) return toast('Passwords do not match','error');
   if(newPass.length<4) return toast('Password must be at least 4 characters','error');
   try{
-    const r=await fetch(API_BASE+'/api/v1/auth/password',{
+    const payload={current_password:cur,new_username:newUser||'',new_password:newPass};
+    let r=await fetch(apiURL('/api/v1/auth/password'),{
       method:'PUT',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({current_password:cur,new_username:newUser||'',new_password:newPass})
+      body:JSON.stringify(payload)
     });
-    const d=await r.json();
+    // Fallback for proxies/load balancers that do not forward PUT.
+    if(r.status===404){
+      r=await fetch(apiURL('/api/v1/auth/password'),{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify(payload)
+      });
+    }
+    let d={};
+    try{d=await r.json();}catch(_){d={};}
     if(!r.ok) throw new Error(d.error||'Failed');
     toast('Password updated successfully');
     $('cpCurrent').value='';$('cpNewUser').value='';$('cpNewPass').value='';$('cpConfirm').value='';

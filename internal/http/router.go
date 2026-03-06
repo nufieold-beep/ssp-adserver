@@ -983,7 +983,7 @@ func registerAuthRoutes(app *fiber.App, s *store) {
 	})
 
 	// Change password — requires current password for verification
-	app.Put("/api/v1/auth/password", func(c *fiber.Ctx) error {
+	passwordHandler := func(c *fiber.Ctx) error {
 		var body struct {
 			CurrentPassword string `json:"current_password"`
 			NewUsername     string `json:"new_username"`
@@ -1008,7 +1008,10 @@ func registerAuthRoutes(app *fiber.App, s *store) {
 		}
 		s.dashboardPass = body.NewPassword
 		return c.JSON(fiber.Map{"success": true, "message": "Credentials updated"})
-	})
+	}
+
+	app.Put("/api/v1/auth/password", passwordHandler)
+	app.Post("/api/v1/auth/password", passwordHandler)
 }
 
 // ── Settings Routes ──
