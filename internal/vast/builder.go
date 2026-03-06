@@ -39,8 +39,13 @@ var mediaExtensions = map[string]string{
 }
 
 // mimeFromURL returns the MIME type for a media URL, defaulting to video/mp4.
+func mediaPathExt(rawURL string) string {
+	return strings.ToLower(path.Ext(strings.SplitN(rawURL, "?", 2)[0]))
+}
+
+// mimeFromURL returns the MIME type for a media URL, defaulting to video/mp4.
 func mimeFromURL(rawURL string) string {
-	ext := strings.ToLower(path.Ext(strings.SplitN(rawURL, "?", 2)[0]))
+	ext := mediaPathExt(rawURL)
 	if m, ok := mediaExtensions[ext]; ok {
 		return m
 	}
@@ -49,7 +54,7 @@ func mimeFromURL(rawURL string) string {
 
 // isMediaExt returns true if the URL path has a known video file extension.
 func isMediaExt(rawURL string) bool {
-	ext := strings.ToLower(path.Ext(strings.SplitN(rawURL, "?", 2)[0]))
+	ext := mediaPathExt(rawURL)
 	_, ok := mediaExtensions[ext]
 	return ok
 }

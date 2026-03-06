@@ -6,7 +6,6 @@ import (
 	"ssp/internal/httputil"
 	"ssp/internal/openrtb"
 	"ssp/internal/vast"
-	"time"
 )
 
 // VASTAdapter implements DemandAdapter for VAST tag demand sources.
@@ -24,10 +23,7 @@ type VASTAdapter struct {
 }
 
 func NewVASTAdapter(cfg *AdapterConfig) *VASTAdapter {
-	t := time.Duration(cfg.TimeoutMs) * time.Millisecond
-	if t == 0 {
-		t = 800 * time.Millisecond
-	}
+	t := resolveTimeout(cfg.TimeoutMs)
 	if cfg.Floor == 0 {
 		cfg.Floor = 1.0
 	}

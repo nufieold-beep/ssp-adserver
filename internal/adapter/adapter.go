@@ -34,6 +34,13 @@ const (
 	TypeDirect AdapterType = "direct"
 )
 
+func resolveTimeout(timeoutMs int) time.Duration {
+	if timeoutMs <= 0 {
+		return 800 * time.Millisecond
+	}
+	return time.Duration(timeoutMs) * time.Millisecond
+}
+
 // BidResult contains bids from a single adapter plus metadata.
 type BidResult struct {
 	AdapterID string
@@ -45,16 +52,16 @@ type BidResult struct {
 
 // AdapterConfig holds adapter-specific settings loaded from config.
 type AdapterConfig struct {
-	ID          string      `yaml:"id" json:"id"`
-	Name        string      `yaml:"name" json:"name"`
-	Type        AdapterType `yaml:"type" json:"type"`
-	Endpoint    string      `yaml:"endpoint" json:"endpoint"`
-	TimeoutMs   int         `yaml:"timeout_ms" json:"timeout_ms"`
-	Floor       float64     `yaml:"floor" json:"floor"`
-	Margin      float64     `yaml:"margin" json:"margin"`
-	QPSLimit    int         `yaml:"qps_limit" json:"qps_limit"` // 0 = unlimited
-	AuctionType string      `yaml:"auction_type" json:"auction_type"`
-	Status      int         `yaml:"status" json:"status"` // 1=active
+	ID            string      `yaml:"id" json:"id"`
+	Name          string      `yaml:"name" json:"name"`
+	Type          AdapterType `yaml:"type" json:"type"`
+	Endpoint      string      `yaml:"endpoint" json:"endpoint"`
+	TimeoutMs     int         `yaml:"timeout_ms" json:"timeout_ms"`
+	Floor         float64     `yaml:"floor" json:"floor"`
+	Margin        float64     `yaml:"margin" json:"margin"`
+	QPSLimit      int         `yaml:"qps_limit" json:"qps_limit"` // 0 = unlimited
+	AuctionType   string      `yaml:"auction_type" json:"auction_type"`
+	Status        int         `yaml:"status" json:"status"` // 1=active
 	TargetGeos    []string
 	TargetOS      []string
 	BlockedBcat   []string

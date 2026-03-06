@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"ssp/internal/httputil"
 	"ssp/internal/openrtb"
-	"time"
 )
 
 // ORTBAdapter implements DemandAdapter for OpenRTB 2.5/2.6 DSP endpoints.
@@ -28,10 +27,7 @@ type ORTBAdapter struct {
 }
 
 func NewORTBAdapter(cfg *AdapterConfig) *ORTBAdapter {
-	t := time.Duration(cfg.TimeoutMs) * time.Millisecond
-	if t == 0 {
-		t = 800 * time.Millisecond
-	}
+	t := resolveTimeout(cfg.TimeoutMs)
 	return &ORTBAdapter{
 		id: cfg.ID, name: cfg.Name, endpoint: cfg.Endpoint,
 		floor: cfg.Floor, margin: cfg.Margin,
