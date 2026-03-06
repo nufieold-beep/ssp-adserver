@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
-	"crypto/tls"
 	"io"
 	"net"
 	"net/http"
@@ -24,7 +23,6 @@ var SharedTransport = &http.Transport{
 	MaxIdleConnsPerHost: 500,
 	MaxConnsPerHost:     1000,
 	IdleConnTimeout:     90 * time.Second,
-	TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
 }
 
 // LimitedReadAll reads up to MaxResponseBody bytes from r.
@@ -111,7 +109,7 @@ func isBlockedHost(host string) bool {
 // NewClient creates an HTTP client that shares the global transport pool.
 func NewClient(timeout time.Duration) *http.Client {
 	if timeout == 0 {
-		timeout = 200 * time.Millisecond
+		timeout = 800 * time.Millisecond
 	}
 	return &http.Client{
 		Timeout:   timeout,

@@ -3,10 +3,9 @@ package adapter
 import (
 	"context"
 	"net/http"
-	"net/url"
 	"ssp/internal/httputil"
 	"ssp/internal/openrtb"
-	"strconv"
+	"ssp/internal/vast"
 	"time"
 )
 
@@ -45,55 +44,8 @@ func (a *VASTAdapter) Name() string                        { return a.name }
 func (a *VASTAdapter) Type() AdapterType                   { return TypeVAST }
 func (a *VASTAdapter) Supports(_ *openrtb.BidRequest) bool { return true }
 
-// enrichTagURL appends targeting signals from the bid request to the VAST tag
-// URL so the DSP can make informed targeting and bid decisions.
-func (a *VASTAdapter) enrichTagURL(req *openrtb.BidRequest) string {
-	u, err := url.Parse(a.tag)
-	if err != nil {
-		return a.tag
-	}
-	q := u.Query()
-	set := func(key, val string) {
-		if val != "" && q.Get(key) == "" {
-			q.Set(key, val)
-		}
-	}
-	setInt := func(key string, val int) {
-		if q.Get(key) == "" {
-			q.Set(key, strconv.Itoa(val))
-		}
-	}
-	set("ip", req.Device.IP)
-	set("ua", req.Device.UA)
-	set("ifa", req.Device.IFA)
-	set("os", req.Device.OS)
-	set("make", req.Device.Make)
-	set("model", req.Device.Model)
-	setInt("devicetype", req.Device.DeviceType)
-	setInt("dnt", req.Device.DNT)
-	setInt("lmt", req.Device.LMT)
-	set("lang", req.Device.Language)
-	if req.Device.Geo != nil {
-		set("country", req.Device.Geo.Country)
-		set("region", req.Device.Geo.Region)
-	}
-	if req.App != nil {
-		set("app_bundle", req.App.Bundle)
-		set("app_name", req.App.Name)
-	}
-	if len(req.Imp) > 0 && req.Imp[0].Video != nil {
-		v := req.Imp[0].Video
-		setInt("w", v.W)
-		setInt("h", v.H)
-		setInt("minduration", v.MinDuration)
-		setInt("maxduration", v.MaxDuration)
-	}
-	u.RawQuery = q.Encode()
-	return u.String()
-}
-
 func (a *VASTAdapter) RequestBids(ctx context.Context, req *openrtb.BidRequest) (*BidResult, error) {
-	tagURL := a.enrichTagURL(req)
+	tagURL := vast.EnrichTagURL(a.tag, req)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, tagURL, nil)
 	if err != nil {
 		return nil, err

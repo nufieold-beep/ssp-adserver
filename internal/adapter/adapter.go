@@ -149,52 +149,8 @@ func (r *Registry) GetActive(req *openrtb.BidRequest) []DemandAdapter {
 }
 
 // FanOut sends bid requests to all eligible adapters in parallel with timeout.
-// Uses channel-based collection with early-return: returns immediately when
-// TMax expires with whatever bids have arrived. This is how enterprise SSPs
-// (Magnite, Index Exchange) handle slow demand partners — never wait past TMax.
 func (r *Registry) FanOut(ctx context.Context, req *openrtb.BidRequest, tmax time.Duration) []*BidResult {
-	adapters := r.GetActive(req)
-	if len(adapters) == 0 {
-		return nil
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, tmax)
-	defer cancel()
-
-	resultCh := make(chan *BidResult, len(adapters))
-
-	for _, adapter := range adapters {
-		go func(a DemandAdapter) {
-			start := time.Now()
-			result, err := a.RequestBids(ctx, req)
-			if err != nil {
-				resultCh <- &BidResult{AdapterID: a.ID(), Error: err, Latency: time.Since(start)}
-				return
-			}
-			if result == nil {
-				resultCh <- &BidResult{AdapterID: a.ID(), NoBid: true, Latency: time.Since(start)}
-				return
-			}
-			result.Latency = time.Since(start)
-			result.AdapterID = a.ID()
-			resultCh <- result
-		}(adapter)
-	}
-
-	// Collect results until all respond or TMax expires (early-return).
-	var out []*BidResult
-	remaining := len(adapters)
-	for remaining > 0 {
-		select {
-		case br := <-resultCh:
-			out = append(out, br)
-			remaining--
-		case <-ctx.Done():
-			// TMax expired — return collected bids, don't wait for slow partners
-			return out
-		}
-	}
-	return out
+	return r.dispatchBids(ctx, req, tmax, r.GetActive(req))
 }
 
 // FanOutTo sends bid requests to a specific set of adapters (by ID) in parallel.
@@ -221,6 +177,12 @@ func (r *Registry) FanOutTo(ctx context.Context, req *openrtb.BidRequest, tmax t
 	}
 	r.mu.RUnlock()
 
+	return r.dispatchBids(ctx, req, tmax, adapters)
+}
+
+// dispatchBids sends bid requests to adapters in parallel with timeout.
+// Returns immediately when TMax expires with whatever bids have arrived.
+func (r *Registry) dispatchBids(ctx context.Context, req *openrtb.BidRequest, tmax time.Duration, adapters []DemandAdapter) []*BidResult {
 	if len(adapters) == 0 {
 		return nil
 	}
@@ -229,7 +191,6 @@ func (r *Registry) FanOutTo(ctx context.Context, req *openrtb.BidRequest, tmax t
 	defer cancel()
 
 	resultCh := make(chan *BidResult, len(adapters))
-
 	for _, adapter := range adapters {
 		go func(a DemandAdapter) {
 			start := time.Now()

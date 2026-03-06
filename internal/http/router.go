@@ -11,8 +11,6 @@ import (
 
 	"ssp/internal/adapter"
 	"ssp/internal/adquality"
-	"ssp/internal/auction"
-	"ssp/internal/bidder"
 	"ssp/internal/config"
 	"ssp/internal/floor"
 	"ssp/internal/httputil"
@@ -386,11 +384,7 @@ type EnterpriseDeps struct {
 	AQScanner   *adquality.Scanner
 }
 
-func NewRouter() *fiber.App {
-	return NewRouterWithDeps(nil, nil, nil, "", nil)
-}
-
-func NewRouterWithDeps(cfg *config.Config, mgr *bidder.Manager, metrics *monitor.Metrics, configPath string, eDeps *EnterpriseDeps) *fiber.App {
+func NewRouterWithDeps(cfg *config.Config, metrics *monitor.Metrics, configPath string, eDeps *EnterpriseDeps) *fiber.App {
 	app := fiber.New(fiber.Config{BodyLimit: 4 * 1024 * 1024})
 	s := newStore()
 
@@ -399,19 +393,12 @@ func NewRouterWithDeps(cfg *config.Config, mgr *bidder.Manager, metrics *monitor
 	app.Use(SecurityHeaders())
 	app.Use(RequestID())
 
-	if mgr == nil {
-		mgr = bidder.NewManager()
-	}
 	if metrics == nil {
 		metrics = monitor.New()
 	}
 	dashPath := "dashboard.html"
-	auctionType := "first_price"
 	if cfg != nil {
 		dashPath = cfg.Server.DashboardPath
-		if cfg.Server.AuctionType != "" {
-			auctionType = cfg.Server.AuctionType
-		}
 	}
 
 	// Set VAST builder base URL for tracking callbacks
@@ -435,14 +422,10 @@ func NewRouterWithDeps(cfg *config.Config, mgr *bidder.Manager, metrics *monitor
 	app.Get("/dashboard", func(c *fiber.Ctx) error { return c.SendFile(dashPath) })
 
 	// ─── VAST Serving Endpoint ───
-	// If enterprise pipeline is configured, use it; otherwise fall back to legacy handler.
 	if eDeps != nil && eDeps.Pipeline != nil {
 		app.Get("/vast/:tag", pipelineHandler(eDeps.Pipeline, metrics, s))
 		app.Get("/api/v1/vast/tag", pipelineHandler(eDeps.Pipeline, metrics, s))
 		app.Get("/api/vast", supplyTagVastHandler(eDeps.Pipeline, metrics, s))
-	} else {
-		app.Get("/vast/:tag", vastHandler(mgr, metrics, s, auctionType))
-		app.Get("/api/v1/vast/tag", vastHandler(mgr, metrics, s, auctionType))
 	}
 
 	// ─── VAST Event Tracking Callbacks ───
@@ -491,101 +474,6 @@ func NewRouterWithDeps(cfg *config.Config, mgr *bidder.Manager, metrics *monitor
 }
 
 // ── VAST Handler ──
-
-func vastHandler(mgr *bidder.Manager, metrics *monitor.Metrics, s *store, auctionType string) fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		// Validate that the tag belongs to a registered supply source
-		tag := c.Params("tag")
-		if tag == "" {
-			tag = c.Query("tag")
-		}
-		var supplyTag *SupplyTag
-		if tag != "" {
-			supplyTag = s.lookupSupplyByTag(tag)
-			if supplyTag == nil {
-				return c.Status(403).JSON(fiber.Map{"error": "Unknown supply source"})
-			}
-		} else {
-			// No tag provided — reject as unknown
-			return c.Status(403).JSON(fiber.Map{"error": "Unknown supply source"})
-		}
-
-		metrics.RecordAdRequest()
-		metrics.RecordAdOpp()
-
-		req := openrtb.BuildFromHTTP(c)
-
-		// Enrich request with supply tag config (floors, dimensions, app info)
-		enrichFromSupplyTag(&req, supplyTag)
-
-		// Validate request per PDF spec section 6
-		if err := validate.Request(&req); err != nil {
-			metrics.RecordError()
-			return c.Status(400).JSON(fiber.Map{"error": err.Error()})
-		}
-
-		metrics.AddTrafficEvent(monitor.TrafficEvent{
-			Type: "ortb_request", RequestID: req.ID, Env: "CTV",
-			Details: fmt.Sprintf("bundle=%s tag=%s", req.App.Bundle, req.Imp[0].TagID),
-		})
-
-		bidStart := time.Now()
-		bids := mgr.CallAll(req)
-		bidLatency := float64(time.Since(bidStart).Milliseconds())
-		metrics.RecordBidLatency(bidLatency)
-
-		if len(bids) == 0 {
-			metrics.RecordNoBid()
-			metrics.AddTrafficEvent(monitor.TrafficEvent{
-				Type: "no_bid", RequestID: req.ID, Env: "CTV",
-				Details: "no bids received from DSPs",
-			})
-			return c.Type("xml").SendString(vast.BuildNoAd())
-		}
-
-		// Run auction (first_price or second_price per config)
-		result := auction.Run(bids, req.Imp[0].BidFloor, auctionType)
-		if result.Winner == nil {
-			metrics.RecordNoBid()
-			return c.Type("xml").SendString(vast.BuildNoAd())
-		}
-
-		winner := result.Winner
-
-		// Fire nurl (win notice) to winning DSP asynchronously
-		auction.FireWinNotice(winner)
-
-		// Fire lurl (loss notice) to all losing DSPs
-		for i := range result.Losers {
-			auction.FireLossNotice(&result.Losers[i])
-			metrics.RecordLoss()
-		}
-
-		// Build VAST XML with real tracking URLs and burl as impression pixel
-		xml := vast.Build(winner, &req, c.BaseURL())
-		if xml == "" {
-			metrics.RecordError()
-			return c.Status(500).JSON(fiber.Map{"error": "Failed to build VAST"})
-		}
-
-		// Record win metrics (impression counted on client-side pixel fire)
-		metrics.RecordWin(result.WinPrice)
-		metrics.RecordSpend(result.WinPrice * 0.85) // Record Net Revenue
-		metrics.RecordVastStart()
-
-		metrics.AddTrafficEvent(monitor.TrafficEvent{
-			Type: "ortb_response", RequestID: req.ID, Env: "CTV",
-			Details: fmt.Sprintf("winner=%s price=%.2f clear=%.2f type=%s nurl=%v burl=%v",
-				winner.ID, winner.Price, result.WinPrice, auctionType,
-				winner.NURL != "", winner.BURL != ""),
-		})
-
-		// Record ad decision
-		s.recordAdDecision(&req, winner, result.WinPrice, "ortb", winner.DemandSrc)
-
-		return c.Type("xml").SendString(xml)
-	}
-}
 
 // ── VAST Event Tracking Callbacks ──
 
@@ -1319,24 +1207,14 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 		if maxDur == 0 {
 			maxDur = 30
 		}
-		deviceType := "3"
-		if t.Env == "STB" {
-			deviceType = "7"
-		}
 		// Use the request's own protocol+host so the URL matches the real domain
-		baseURL := c.BaseURL()
-		url := fmt.Sprintf("%s/api/vast?sid=%d&w=%d&h=%d&cb={cb}&ip={uip}&ua={ua}"+
-			"&app_bundle={app_bundle}&app_name={app_name}&app_store_url={app_store_url}"+
-			"&country_code=US&max_dur=%d&min_dur=%d"+
-			"&device_make={device_make}&device_model={device_model}&device_type=%s"+
-			"&ct_genre=game,entertainment,family&ct_lang=en&dnt=0&ifa={idfa}&os={device_os}"+
-			"&us_privacy=1---",
-			baseURL, t.ID, w, h, maxDur, minDur, deviceType)
+		relativeURL := generateVastTagURL(t)
+		vastURL := c.BaseURL() + relativeURL
 
 		return c.JSON(fiber.Map{
 			"supply_tag_id":   t.ID,
 			"supply_tag_name": t.Name,
-			"vast_url":        url,
+			"vast_url":        vastURL,
 			"width":           w,
 			"height":          h,
 			"min_duration":    minDur,

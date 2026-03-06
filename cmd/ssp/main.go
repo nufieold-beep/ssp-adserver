@@ -9,7 +9,6 @@ import (
 
 	"ssp/internal/adapter"
 	"ssp/internal/adquality"
-	"ssp/internal/bidder"
 	"ssp/internal/config"
 	"ssp/internal/eventbus"
 	"ssp/internal/floor"
@@ -42,8 +41,6 @@ func main() {
 		MaxDur:   cfg.Server.ORTBMaxDur,
 	})
 
-	// Legacy bidder manager (backward-compatible)
-	mgr := bidder.NewManagerFromConfig(cfg)
 	metrics := monitor.New()
 
 	// ── Enterprise components ──
@@ -81,16 +78,27 @@ func main() {
 	}
 
 	// Register legacy YAML bidders as enterprise adapters so ALL demand
-	// sources (legacy + enterprise) compete in one parallel FanOut auction.
-	for _, b := range mgr.Bidders() {
-		la := adapter.NewLegacyAdapter(b)
-		lcfg := &adapter.AdapterConfig{
-			ID:     la.ID(),
-			Name:   la.Name(),
-			Type:   adapter.AdapterType(b.BidderType()),
-			Status: 1,
+	// sources compete in one parallel FanOut auction.
+	for _, bc := range cfg.Bidders {
+		if bc.Status == 0 {
+			continue
 		}
-		reg.Register(la, lcfg)
+		id := "yaml-" + bc.Name
+		acfg := &adapter.AdapterConfig{
+			ID: id, Name: bc.Name,
+			Type:      adapter.AdapterType(bc.Type),
+			Endpoint:  bc.Endpoint,
+			TimeoutMs: bc.Timeout,
+			Floor:     bc.Floor,
+			Margin:    bc.Margin,
+			Status:    1,
+		}
+		switch adapter.AdapterType(bc.Type) {
+		case adapter.TypeORTB:
+			reg.Register(adapter.NewORTBAdapter(acfg), acfg)
+		case adapter.TypeVAST:
+			reg.Register(adapter.NewVASTAdapter(acfg), acfg)
+		}
 	}
 
 	// Load floor rules from config
@@ -134,7 +142,7 @@ func main() {
 		AQScanner:   aqScanner,
 	}
 
-	app := ssphttp.NewRouterWithDeps(cfg, mgr, metrics, configPath, eDeps)
+	app := ssphttp.NewRouterWithDeps(cfg, metrics, configPath, eDeps)
 
 	// Graceful shutdown on SIGINT/SIGTERM
 	quit := make(chan os.Signal, 1)
@@ -147,8 +155,8 @@ func main() {
 		}
 	}()
 
-	log.Printf("SSP server starting on %s (legacy bidders: %d, total demand adapters: %d)",
-		cfg.Server.Port, len(mgr.Bidders()), reg.Count())
+	log.Printf("SSP server starting on %s (demand adapters: %d)",
+		cfg.Server.Port, reg.Count())
 	if err := app.Listen(cfg.Server.Port); err != nil {
 		log.Printf("Server stopped: %v", err)
 	}
