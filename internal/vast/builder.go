@@ -298,13 +298,13 @@ func buildWrapper(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) str
 }
 
 // buildPassthrough takes a complete VAST XML document from the DSP and
-// injects SSP impression + tracking pixels into it.
+// injects SSP impression pixels only. The DSP's own TrackingEvents and
+// creative structure are preserved untouched.
 func buildPassthrough(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) string {
 	xml := bid.SubstituteMacros(strings.TrimSpace(bid.Adm))
 
 	evtBase := baseURL + "/api/v1/event"
 	impressions := impressionBlock(evtBase, bid, req)
-	tracking := trackingEventsBlock(evtBase, bid)
 
 	// Inject impression pixels after the first <Impression> block or after <InLine>/<Wrapper>
 	injected := false
@@ -325,18 +325,6 @@ func buildPassthrough(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string)
 				pos := adIdx + adEnd + 1
 				xml = xml[:pos] + "\n" + impressions + xml[pos:]
 			}
-		}
-	}
-
-	// Inject SSP tracking events into existing <TrackingEvents> or before </Linear>
-	trackInjected := false
-	if teIdx := strings.Index(xml, "</TrackingEvents>"); teIdx >= 0 {
-		xml = xml[:teIdx] + tracking[len("      <TrackingEvents>\n"):len(tracking)-len("      </TrackingEvents>\n")] + xml[teIdx:]
-		trackInjected = true
-	}
-	if !trackInjected {
-		if linIdx := strings.Index(xml, "</Linear>"); linIdx >= 0 {
-			xml = xml[:linIdx] + tracking + xml[linIdx:]
 		}
 	}
 
