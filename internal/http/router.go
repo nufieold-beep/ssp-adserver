@@ -919,7 +919,7 @@ func registerAnalyticsRoutes(app *fiber.App, s *store, metrics *monitor.Metrics)
 		for _, d := range s.adDecisions {
 			rows = append(rows, fiber.Map{
 				"adomain": d.ADomain, "demand_id": d.DemandEp, "creative_id": d.CreativeID,
-				"impressions": 1, "revenue": d.NetPrice, "ecpm": d.NetPrice * 1000,
+				"impressions": 1, "revenue": d.NetPrice / 1000.0, "ecpm": d.NetPrice,
 				"avg_win_price": d.BidPrice,
 			})
 		}

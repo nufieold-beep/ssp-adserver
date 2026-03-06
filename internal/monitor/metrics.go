@@ -99,9 +99,9 @@ func (m *Metrics) RecordVastQ3()     { m.VastQ3.Add(1) }
 func (m *Metrics) RecordVastSkip()   { m.VastSkips.Add(1) }
 func (m *Metrics) RecordVastError()  { m.VastErrors.Add(1) }
 
-func (m *Metrics) RecordSpend(amount float64) {
+func (m *Metrics) RecordSpend(cpm float64) {
 	m.TotalSpendMu.Lock()
-	m.TotalSpend += amount
+	m.TotalSpend += cpm / 1000.0
 	m.TotalSpendMu.Unlock()
 }
 
