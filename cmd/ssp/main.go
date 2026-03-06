@@ -30,6 +30,7 @@ func main() {
 		cfg = &config.Config{
 			Server: config.ServerConfig{
 				Port:          ":8080",
+				DefaultTMax:   500,
 				DashboardPath: "dashboard.html",
 				ORTBBidFloor:  0.50,
 				ORTBMinDur:    5,

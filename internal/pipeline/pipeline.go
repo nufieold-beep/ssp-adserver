@@ -85,7 +85,11 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 	// ── Stage 3: Fan-out bid requests ──
 	// Send bid requests to all eligible demand adapters in parallel.
 	// Each adapter has its own timeout and QPS limit (GAM traffic shaping).
-	tmax := time.Duration(p.DefaultTMax) * time.Millisecond
+	defaultTMaxMs := p.DefaultTMax
+	if defaultTMaxMs <= 0 {
+		defaultTMaxMs = 500
+	}
+	tmax := time.Duration(defaultTMaxMs) * time.Millisecond
 	if req.TMax > 0 {
 		tmax = time.Duration(req.TMax) * time.Millisecond
 	}
@@ -194,7 +198,7 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 
 	// ── Stage 9: Billing & metrics (impression counted on client-side pixel fire) ──
 	p.Metrics.RecordWin(auctionResult.WinPrice)
-	p.Metrics.RecordSpend(auctionResult.WinPrice * 0.85) // Record Net Revenue
+	p.Metrics.RecordSpend(winner.ReportingPrice(auctionResult.WinPrice))
 	p.Metrics.RecordVastStart()
 
 	p.Metrics.AddTrafficEvent(monitor.TrafficEvent{

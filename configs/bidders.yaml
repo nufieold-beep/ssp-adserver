@@ -2,7 +2,7 @@ server:
   port: ":8080"
   auction_type: "first_price"
   default_floor: 5.00
-  default_tmax: 800
+  default_tmax: 500
   dashboard_path: "dashboard.html"
 
 bidders:

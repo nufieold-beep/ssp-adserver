@@ -27,12 +27,7 @@ func Run(bids []openrtb.Bid, floor float64, auctionType string) *AuctionResult {
 			continue
 		}
 
-		// Keep floor checks on gross bid value when margin is configured.
-		floorComparablePrice := bid.Price
-		if bid.Margin > 0 && bid.Margin < 1 {
-			floorComparablePrice = bid.Price / (1 - bid.Margin)
-		}
-		if floorComparablePrice < floor {
+		if bid.Price < floor {
 			continue
 		}
 		if bid.Adm == "" && bid.NURL == "" {

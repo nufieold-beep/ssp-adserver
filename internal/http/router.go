@@ -367,10 +367,12 @@ func (s *store) recordAdDecision(req *openrtb.BidRequest, winner *openrtb.Bid, w
 		devType = "STB"
 	}
 
+	netPrice := winner.ReportingPrice(winPrice)
+
 	s.adDecisions = append(s.adDecisions, AdDecision{
 		Time: time.Now(), CreativeID: winner.CrID, Source: source,
 		ADomain: adomain, Seat: winner.Seat,
-		BidPrice: winner.Price, NetPrice: winPrice * 0.85,
+		BidPrice: winner.Price, NetPrice: netPrice,
 		AdmType: "vast", AppBundle: appBundle, Country: country, DeviceType: devType,
 		DemandEp: demandEp,
 	})

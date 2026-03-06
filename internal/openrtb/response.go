@@ -57,9 +57,6 @@ func (b *Bid) SubstituteMacros(rawURL string) string {
 	if clearPrice == 0 {
 		clearPrice = b.Price
 	}
-	if b.Margin > 0 && b.Margin < 1 {
-		clearPrice = clearPrice / (1 - b.Margin)
-	}
 
 	priceStr := formatPrice(clearPrice)
 
@@ -73,6 +70,15 @@ func (b *Bid) SubstituteMacros(rawURL string) string {
 	r = replaceMacro(r, "AUCTION_CURRENCY", "USD")
 
 	return ensureScheme(r)
+}
+
+// ReportingPrice returns margin-adjusted price for internal billing/reporting.
+// Auction ranking, floor checks, and outbound DSP macros should use gross price.
+func (b *Bid) ReportingPrice(grossPrice float64) float64 {
+	if b != nil && b.Margin > 0 && b.Margin < 1 {
+		return grossPrice * (1 - b.Margin)
+	}
+	return grossPrice
 }
 
 // replaceMacro replaces all three encoding forms of a single macro in s.

@@ -114,11 +114,11 @@ func (a *ORTBAdapter) RequestBids(ctx context.Context, req *openrtb.BidRequest) 
 		return &BidResult{AdapterID: a.id, NoBid: true}, nil
 	}
 
-	// Apply margin
+	// Margin is metadata for internal billing/reporting only.
+	// Keep bid.Price gross so floor checks and auction ranking are unaffected.
 	if a.margin > 0 {
 		for i := range validatedBids {
 			validatedBids[i].Margin = a.margin
-			validatedBids[i].Price *= (1 - a.margin)
 		}
 	}
 

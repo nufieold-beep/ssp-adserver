@@ -1364,7 +1364,7 @@ function renderSettingsServer(s) {
       </div>
       <div class="form-row">
         <div class="form-group"><label>Default Floor ($)</label><input id="cfgFloor" type="number" step="0.01" value="${s.default_floor||5}"></div>
-        <div class="form-group"><label>Default TMax (ms)</label><input id="cfgTmax" type="number" value="${s.default_tmax||120}"></div>
+        <div class="form-group"><label>Default TMax (ms)</label><input id="cfgTmax" type="number" value="${s.default_tmax||500}"></div>
       </div>
       <div class="form-row">
         <div class="form-group full"><label>Dashboard Path</label><input id="cfgDash" value="${esc(s.dashboard_path||'dashboard.html')}"></div>
@@ -1396,7 +1396,7 @@ async function saveSettings() {
   _settingsData.server.port=$v('cfgPort')||':8080';
   _settingsData.server.auction_type=$v('cfgAuction')||'first_price';
   _settingsData.server.default_floor=parseFloat($v('cfgFloor'))||5;
-  _settingsData.server.default_tmax=parseInt($v('cfgTmax'))||120;
+  _settingsData.server.default_tmax=parseInt($v('cfgTmax'))||500;
   _settingsData.server.dashboard_path=$v('cfgDash')||'dashboard.html';
   try{await api('/api/v1/settings/',{method:'PUT',body:_settingsData});toast('Settings saved');loadSettings();}catch(e){}
 }

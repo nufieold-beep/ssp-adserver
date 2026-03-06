@@ -99,7 +99,7 @@ func Load(path string) (*Config, error) {
 		cfg.Server.DefaultFloor = 5.00
 	}
 	if cfg.Server.DefaultTMax == 0 {
-		cfg.Server.DefaultTMax = 800
+		cfg.Server.DefaultTMax = 500
 	}
 	if cfg.Server.DashboardPath == "" {
 		cfg.Server.DashboardPath = "dashboard.html"

@@ -67,9 +67,6 @@ func (a *VASTAdapter) RequestBids(ctx context.Context, req *openrtb.BidRequest) 
 	}
 
 	price := a.cpm
-	if a.margin > 0 {
-		price *= (1 - a.margin)
-	}
 
 	// Match ImpID to actual request imp for bid validation
 	impID := "1"
