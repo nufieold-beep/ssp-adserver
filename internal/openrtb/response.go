@@ -33,6 +33,7 @@ type Bid struct {
 	W       int      `json:"w,omitempty"`
 	H       int      `json:"h,omitempty"`
 	Attr    []int    `json:"attr,omitempty"`   // Creative attributes
+	MType   any      `json:"mtype,omitempty"`  // OpenRTB 2.6: Creative markup type
 	AdvID   string   `json:"adv_id,omitempty"` // Advertiser ID for quality checks
 	Seat    string   `json:"-"`                // Populated from SeatBid.Seat during validation
 }

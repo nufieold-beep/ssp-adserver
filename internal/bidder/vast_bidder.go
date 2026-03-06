@@ -56,6 +56,7 @@ func (b *VASTBidder) Request(req openrtb.BidRequest) ([]openrtb.Bid, error) {
 		ImpID: "1",
 		Price: b.cpm,
 		Adm:   adm,
+		MType: "CREATIVE_MARKUP_VIDEO",
 	}
 
 	return []openrtb.Bid{bid}, nil

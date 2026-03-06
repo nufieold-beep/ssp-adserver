@@ -74,6 +74,7 @@ func (a *VASTAdapter) RequestBids(ctx context.Context, req *openrtb.BidRequest) 
 		ImpID: "1",
 		Price: price,
 		Adm:   adm,
+		MType: "CREATIVE_MARKUP_VIDEO",
 	}
 
 	return &BidResult{AdapterID: a.id, Bids: []openrtb.Bid{bid}}, nil
