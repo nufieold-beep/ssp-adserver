@@ -287,9 +287,21 @@ func enrichFromSupplyTag(req *openrtb.BidRequest, tag *SupplyTag) {
 			req.Device.Geo = &openrtb.Geo{Country: cc, Type: 2}
 		}
 	}
-	// Content genre
-	if tag.ContentGenre != "" && req.App != nil {
-		req.App.Cat = strings.Split(tag.ContentGenre, ",")
+	// App fields from supply tag config
+	if req.App != nil {
+		if tag.AppBundle != "" && (req.App.Bundle == "" || req.App.Bundle == "{app_bundle}") {
+			req.App.Bundle = tag.AppBundle
+			req.App.ID = tag.AppBundle
+		}
+		if tag.AppName != "" && (req.App.Name == "" || req.App.Name == "{app_name}") {
+			req.App.Name = tag.AppName
+		}
+		if tag.Domain != "" {
+			req.App.StoreURL = tag.Domain
+		}
+		if tag.ContentGenre != "" {
+			req.App.Cat = strings.Split(tag.ContentGenre, ",")
+		}
 	}
 	// Content language
 	if tag.ContentLang != "" {
@@ -312,11 +324,25 @@ func (s *store) recordAdDecision(req *openrtb.BidRequest, winner *openrtb.Bid, w
 	if len(winner.ADomain) > 0 {
 		adomain = winner.ADomain[0]
 	}
+	devType := "CTV"
+	switch req.Device.DeviceType {
+	case 1:
+		devType = "Mobile"
+	case 2:
+		devType = "Desktop"
+	case 4:
+		devType = "Phone"
+	case 5:
+		devType = "Tablet"
+	case 7:
+		devType = "STB"
+	}
+
 	s.adDecisions = append(s.adDecisions, AdDecision{
 		Time: time.Now(), CreativeID: winner.CrID, Source: source,
 		ADomain: adomain, Seat: winner.Seat,
 		BidPrice: winner.Price, NetPrice: winPrice * 0.85,
-		AdmType: "vast", AppBundle: appBundle, Country: country, DeviceType: "CTV",
+		AdmType: "vast", AppBundle: appBundle, Country: country, DeviceType: devType,
 		DemandEp: demandEp,
 	})
 	if len(s.adDecisions) > 500 {
