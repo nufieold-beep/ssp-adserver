@@ -55,10 +55,15 @@ type AdapterConfig struct {
 	QPSLimit    int         `yaml:"qps_limit" json:"qps_limit"` // 0 = unlimited
 	AuctionType string      `yaml:"auction_type" json:"auction_type"`
 	Status      int         `yaml:"status" json:"status"` // 1=active
-	TargetGeos  []string
-	TargetOS    []string
-	BlockedBcat []string
-	AllowedMime []string
+	TargetGeos    []string
+	TargetOS      []string
+	BlockedBcat   []string
+	AllowedMime   []string
+	GZIPSupport   bool
+	RemovePChain  bool
+	SChainEnabled bool
+	BAdv          []string
+	BCat          []string
 }
 
 // Registry manages all demand adapters with hot-reload capability.

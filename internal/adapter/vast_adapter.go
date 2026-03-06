@@ -15,12 +15,13 @@ import (
 // Magnite and FreeWheel both support VAST tags as a demand type alongside
 // programmatic ORTB, unified through a single adapter interface.
 type VASTAdapter struct {
-	id     string
-	name   string
-	tag    string
-	client *http.Client
-	cpm    float64
-	margin float64
+	id          string
+	name        string
+	tag         string
+	client      *http.Client
+	cpm         float64
+	margin      float64
+	gzipSupport bool
 }
 
 func NewVASTAdapter(cfg *AdapterConfig) *VASTAdapter {
@@ -34,7 +35,8 @@ func NewVASTAdapter(cfg *AdapterConfig) *VASTAdapter {
 	return &VASTAdapter{
 		id: cfg.ID, name: cfg.Name, tag: cfg.Endpoint,
 		cpm: cfg.Floor, margin: cfg.Margin,
-		client: httputil.NewClient(t),
+		gzipSupport: cfg.GZIPSupport,
+		client:      httputil.NewClient(t),
 	}
 }
 
@@ -95,6 +97,9 @@ func (a *VASTAdapter) RequestBids(ctx context.Context, req *openrtb.BidRequest) 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, tagURL, nil)
 	if err != nil {
 		return nil, err
+	}
+	if a.gzipSupport {
+		httpReq.Header.Set("Accept-Encoding", "gzip")
 	}
 
 	resp, err := a.client.Do(httpReq)

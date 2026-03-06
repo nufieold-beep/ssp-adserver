@@ -1,6 +1,7 @@
 package adapter
 
 import (
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -13,12 +14,17 @@ import (
 // This is how Magnite and Prebid Server connect to programmatic DSPs:
 // standard JSON POST with the BidRequest, parse BidResponse.
 type ORTBAdapter struct {
-	id       string
-	name     string
-	endpoint string
-	client   *http.Client
-	floor    float64
-	margin   float64
+	id            string
+	name          string
+	endpoint      string
+	client        *http.Client
+	floor         float64
+	margin        float64
+	gzipSupport   bool
+	removePChain  bool
+	schainEnabled bool
+	badv          []string
+	bcat          []string
 }
 
 func NewORTBAdapter(cfg *AdapterConfig) *ORTBAdapter {
@@ -29,7 +35,12 @@ func NewORTBAdapter(cfg *AdapterConfig) *ORTBAdapter {
 	return &ORTBAdapter{
 		id: cfg.ID, name: cfg.Name, endpoint: cfg.Endpoint,
 		floor: cfg.Floor, margin: cfg.Margin,
-		client: httputil.NewClient(t),
+		gzipSupport:   cfg.GZIPSupport,
+		removePChain:  cfg.RemovePChain,
+		schainEnabled: cfg.SChainEnabled,
+		badv:          cfg.BAdv,
+		bcat:          cfg.BCat,
+		client:        httputil.NewClient(t),
 	}
 }
 
@@ -39,17 +50,34 @@ func (a *ORTBAdapter) Type() AdapterType                   { return TypeORTB }
 func (a *ORTBAdapter) Supports(_ *openrtb.BidRequest) bool { return true }
 
 func (a *ORTBAdapter) RequestBids(ctx context.Context, req *openrtb.BidRequest) (*BidResult, error) {
+	// Clone and apply per-endpoint ORTB fields
+	outReq := a.applyEndpointConfig(req)
+
 	buf := httputil.GetBuffer()
 	defer httputil.PutBuffer(buf)
-	if err := json.NewEncoder(buf).Encode(req); err != nil {
-		return nil, err
+
+	if a.gzipSupport {
+		// GZIP compress the request body
+		gz := gzip.NewWriter(buf)
+		if err := json.NewEncoder(gz).Encode(outReq); err != nil {
+			return nil, err
+		}
+		gz.Close()
+	} else {
+		if err := json.NewEncoder(buf).Encode(outReq); err != nil {
+			return nil, err
+		}
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.endpoint, buf)
 	if err != nil {
 		return nil, err
 	}
-	httputil.SetORTBHeaders(httpReq, req.ID, req.Device.UA, req.Device.IP)
+	httputil.SetORTBHeaders(httpReq, outReq.ID, outReq.Device.UA, outReq.Device.IP)
+	if a.gzipSupport {
+		httpReq.Header.Set("Content-Encoding", "gzip")
+		httpReq.Header.Set("Accept-Encoding", "gzip")
+	}
 
 	resp, err := a.client.Do(httpReq)
 	if err != nil {
@@ -89,4 +117,38 @@ func (a *ORTBAdapter) RequestBids(ctx context.Context, req *openrtb.BidRequest) 
 	}
 
 	return &BidResult{AdapterID: a.id, Bids: valid}, nil
+}
+
+// applyEndpointConfig merges per-endpoint ORTB settings into a copy of the bid request.
+func (a *ORTBAdapter) applyEndpointConfig(req *openrtb.BidRequest) *openrtb.BidRequest {
+	// Shallow copy the request
+	out := *req
+
+	// Merge BAdv: combine request-level + endpoint-level blocked advertisers
+	if len(a.badv) > 0 {
+		merged := make([]string, 0, len(req.BAdv)+len(a.badv))
+		merged = append(merged, req.BAdv...)
+		merged = append(merged, a.badv...)
+		out.BAdv = merged
+	}
+
+	// Merge BCat: combine request-level + endpoint-level blocked categories
+	if len(a.bcat) > 0 {
+		merged := make([]string, 0, len(req.BCat)+len(a.bcat))
+		merged = append(merged, req.BCat...)
+		merged = append(merged, a.bcat...)
+		out.BCat = merged
+	}
+
+	// Supply chain: remove ext.schain if not enabled for this endpoint
+	if !a.schainEnabled && out.Ext != nil && out.Ext.SChain != nil {
+		out.Ext = nil
+	}
+
+	// Remove PChain: strip schain nodes (pchain removal)
+	if a.removePChain && out.Ext != nil && out.Ext.SChain != nil {
+		out.Ext = nil
+	}
+
+	return &out
 }

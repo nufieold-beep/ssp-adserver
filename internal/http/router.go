@@ -1284,10 +1284,15 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 			}
 			acfg := &adapter.AdapterConfig{
 				ID: adapterID, Name: e.Name,
-				Type:     adapter.AdapterType(e.Integration),
-				Endpoint: e.URL, TimeoutMs: timeout,
-				Floor: e.Floor, Margin: e.Margin,
-				QPSLimit: e.QPS, Status: 1,
+				Type:          adapter.AdapterType(e.Integration),
+				Endpoint:      e.URL, TimeoutMs: timeout,
+				Floor:         e.Floor, Margin: e.Margin,
+				QPSLimit:      e.QPS, Status: 1,
+				GZIPSupport:   e.GZIPSupport,
+				RemovePChain:  e.RemovePChain,
+				SChainEnabled: e.SupplyChain,
+				BAdv:          e.BAdv,
+				BCat:          e.BCat,
 			}
 			switch adapter.AdapterType(e.Integration) {
 			case adapter.TypeVAST:
@@ -1338,6 +1343,38 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 		e.BAdv = update.BAdv
 		e.BCat = update.BCat
 		e.SupplyChain = update.SupplyChain
+
+		// Re-register adapter with updated config for live hot-reload
+		if eDeps != nil && eDeps.Registry != nil && e.URL != "" {
+			adapterID := fmt.Sprintf("demand-ep-%d", id)
+			timeout := e.Timeout
+			if timeout == 0 {
+				timeout = 200
+			}
+			acfg := &adapter.AdapterConfig{
+				ID: adapterID, Name: e.Name,
+				Type:          adapter.AdapterType(e.Integration),
+				Endpoint:      e.URL, TimeoutMs: timeout,
+				Floor:         e.Floor, Margin: e.Margin,
+				QPSLimit:      e.QPS, Status: e.Status,
+				GZIPSupport:   e.GZIPSupport,
+				RemovePChain:  e.RemovePChain,
+				SChainEnabled: e.SupplyChain,
+				BAdv:          e.BAdv,
+				BCat:          e.BCat,
+			}
+			if e.Status == 1 {
+				switch adapter.AdapterType(e.Integration) {
+				case adapter.TypeVAST:
+					eDeps.Registry.Register(adapter.NewVASTAdapter(acfg), acfg)
+				default:
+					eDeps.Registry.Register(adapter.NewORTBAdapter(acfg), acfg)
+				}
+			} else {
+				eDeps.Registry.Remove(adapterID)
+			}
+		}
+
 		return c.JSON(e)
 	})
 
