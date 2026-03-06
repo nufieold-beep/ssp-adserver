@@ -173,6 +173,24 @@ func buildInline(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) stri
 	bidID := html.EscapeString(bid.ID)
 	crID := html.EscapeString(bid.CrID)
 
+	admURL := strings.TrimSpace(bid.Adm)
+	mimeType := "video/mp4"
+	ext := strings.ToLower(path.Ext(strings.SplitN(admURL, "?", 2)[0]))
+	switch ext {
+	case ".webm":
+		mimeType = "video/webm"
+	case ".ogg":
+		mimeType = "video/ogg"
+	case ".m3u8":
+		mimeType = "application/x-mpegURL"
+	case ".mpd":
+		mimeType = "application/dash+xml"
+	case ".mov":
+		mimeType = "video/quicktime"
+	case ".3gp":
+		mimeType = "video/3gpp"
+	}
+
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <VAST version="3.0">
  <Ad id="%s">
@@ -184,14 +202,14 @@ func buildInline(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) stri
      <Linear>
       <Duration>00:00:30</Duration>
       <MediaFiles>
-       <MediaFile type="video/mp4" width="%d" height="%d" delivery="progressive" bitrate="2000"><![CDATA[%s]]></MediaFile>
+       <MediaFile type="%s" width="%d" height="%d" delivery="progressive" bitrate="2000"><![CDATA[%s]]></MediaFile>
       </MediaFiles>
      </Linear>
     </Creative>
    </Creatives>
   </InLine>
  </Ad>
-</VAST>`, bidID, bidID, impressions, crID, w, h, strings.TrimSpace(bid.Adm))
+</VAST>`, bidID, bidID, impressions, crID, mimeType, w, h, admURL)
 }
 
 // buildWrapper creates a VAST Wrapper that redirects to the DSP's VAST tag URL.
@@ -207,17 +225,17 @@ func buildWrapper(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) str
  <Ad id="%s">
   <Wrapper>
    <AdSystem>viadsmedia SSP</AdSystem>
-%s   <VASTAdTagURI><![CDATA[%s]]></VASTAdTagURI>
-   <Creatives/>
+   <VASTAdTagURI><![CDATA[%s]]></VASTAdTagURI>
+%s   <Creatives></Creatives>
   </Wrapper>
  </Ad>
-</VAST>`, bidID, impressions, strings.TrimSpace(bid.Adm))
+</VAST>`, bidID, strings.TrimSpace(bid.Adm), impressions)
 }
 
 // buildPassthrough takes a complete VAST XML document from the DSP and
 // injects SSP impression + tracking pixels into it.
 func buildPassthrough(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) string {
-	xml := html.UnescapeString(strings.TrimSpace(bid.Adm))
+	xml := strings.TrimSpace(bid.Adm)
 	evtBase := fmt.Sprintf("%s/api/v1/event", baseURL)
 	impressions := impressionBlock(evtBase, bid, req)
 

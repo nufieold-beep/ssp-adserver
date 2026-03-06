@@ -19,19 +19,19 @@ type SeatBid struct {
 }
 
 type Bid struct {
-	ID      string   `json:"id"`
-	ImpID   string   `json:"impid"`
-	Price   float64  `json:"price"`
-	Adm     string   `json:"adm"`
-	NURL    string   `json:"nurl,omitempty"` // Win notice URL
-	BURL    string   `json:"burl,omitempty"` // Billing URL (impression)
-	LURL    string   `json:"lurl,omitempty"` // Loss notice URL
-	CrID    string   `json:"crid,omitempty"`
-	ADomain []string `json:"adomain,omitempty"`
-	Cat     []string `json:"cat,omitempty"` // Creative categories
-	DealID  string   `json:"dealid,omitempty"`
-	W       int      `json:"w,omitempty"`
-	H       int      `json:"h,omitempty"`
+	ID       string   `json:"id"`
+	ImpID    string   `json:"impid"`
+	Price    float64  `json:"price"`
+	Adm      string   `json:"adm"`
+	NURL     string   `json:"nurl,omitempty"` // Win notice URL
+	BURL     string   `json:"burl,omitempty"` // Billing URL (impression)
+	LURL     string   `json:"lurl,omitempty"` // Loss notice URL
+	CrID     string   `json:"crid,omitempty"`
+	ADomain  []string `json:"adomain,omitempty"`
+	Cat      []string `json:"cat,omitempty"` // Creative categories
+	DealID   string   `json:"dealid,omitempty"`
+	W        int      `json:"w,omitempty"`
+	H        int      `json:"h,omitempty"`
 	Attr     []int    `json:"attr,omitempty"`   // Creative attributes
 	MType    any      `json:"mtype,omitempty"`  // OpenRTB 2.6: Creative markup type
 	AdvID    string   `json:"adv_id,omitempty"` // Advertiser ID for quality checks

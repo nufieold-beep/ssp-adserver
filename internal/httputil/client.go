@@ -1,9 +1,11 @@
 package httputil
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"crypto/tls"
+	"html"
 	"io"
 	"net"
 	"net/http"
@@ -34,30 +36,45 @@ func LimitedReadAll(r io.Reader) ([]byte, error) {
 // ReadResponseBody reads the response body, automatically decompressing gzip
 // if the Content-Encoding header indicates it. Reads up to MaxResponseBody bytes.
 func ReadResponseBody(resp *http.Response) ([]byte, error) {
-	var reader io.Reader = resp.Body
-	if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
-		gz, err := gzip.NewReader(resp.Body)
-		if err != nil {
-			return nil, err
+	reader := bufio.NewReader(resp.Body)
+	var ioReader io.Reader = reader
+
+	// Peek 2 bytes to check for gzip magic number (0x1f 0x8b)
+	peek, _ := reader.Peek(2)
+	isGzip := len(peek) == 2 && peek[0] == 0x1f && peek[1] == 0x8b
+	if isGzip || strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
+		gz, err := gzip.NewReader(reader)
+		if err == nil {
+			defer gz.Close()
+			ioReader = gz
 		}
-		defer gz.Close()
-		reader = gz
 	}
-	return io.ReadAll(io.LimitReader(reader, MaxResponseBody))
+	body, err := io.ReadAll(io.LimitReader(ioReader, MaxResponseBody))
+	if err != nil {
+		return nil, err
+	}
+	unescaped := html.UnescapeString(string(body))
+	return []byte(unescaped), nil
 }
 
 // ResponseBodyReader returns an io.Reader for the response body that handles
 // gzip decompression automatically. The caller must close the returned reader
 // when done (if it's a gzip reader). Returns the reader and a close function.
 func ResponseBodyReader(resp *http.Response) (io.Reader, func(), error) {
-	if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
-		gz, err := gzip.NewReader(resp.Body)
+	reader := bufio.NewReader(resp.Body)
+
+	// Peek 2 bytes for gzip
+	peek, _ := reader.Peek(2)
+	isGzip := len(peek) == 2 && peek[0] == 0x1f && peek[1] == 0x8b
+
+	if isGzip || strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
+		gz, err := gzip.NewReader(reader)
 		if err != nil {
 			return nil, nil, err
 		}
 		return io.LimitReader(gz, MaxResponseBody), func() { gz.Close() }, nil
 	}
-	return io.LimitReader(resp.Body, MaxResponseBody), func() {}, nil
+	return io.LimitReader(reader, MaxResponseBody), func() {}, nil
 }
 
 // ValidateDemandURL checks that a URL is safe to use as a demand endpoint.

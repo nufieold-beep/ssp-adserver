@@ -2,7 +2,6 @@ package adapter
 
 import (
 	"context"
-	"html"
 	"net/http"
 	"ssp/internal/httputil"
 	"ssp/internal/openrtb"
@@ -59,7 +58,7 @@ func (a *VASTAdapter) RequestBids(ctx context.Context, req *openrtb.BidRequest) 
 		return nil, err
 	}
 
-	adm := html.UnescapeString(string(body))
+	adm := string(body)
 	if adm == "" {
 		return &BidResult{AdapterID: a.id, NoBid: true}, nil
 	}

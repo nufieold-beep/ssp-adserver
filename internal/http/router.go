@@ -73,10 +73,10 @@ type SupplyTag struct {
 	ContentGenre string `json:"content_genre,omitempty"` // comma-separated: game,entertainment,family
 	ContentLang  string `json:"content_lang,omitempty"`  // en, es, etc.
 	DeviceType   int    `json:"device_type,omitempty"`   // 3=CTV, 7=STB
-        AppName      string `json:"app_name,omitempty"`      // Added for App/Site building
-        AppBundle    string `json:"app_bundle,omitempty"`    // Added for App/Site building
-        Domain       string `json:"domain,omitempty"`        // Added for App/Site building
-        VastURL      string `json:"vast_url,omitempty"`      // Generated VAST tag URL (read-only)
+	AppName      string `json:"app_name,omitempty"`      // Added for App/Site building
+	AppBundle    string `json:"app_bundle,omitempty"`    // Added for App/Site building
+	Domain       string `json:"domain,omitempty"`        // Added for App/Site building
+	VastURL      string `json:"vast_url,omitempty"`      // Generated VAST tag URL (read-only)
 }
 
 type DemandEndpoint struct {

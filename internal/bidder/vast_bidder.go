@@ -1,7 +1,6 @@
 package bidder
 
 import (
-	"html"
 	"net/http"
 	"ssp/internal/httputil"
 	"ssp/internal/openrtb"
@@ -46,7 +45,7 @@ func (b *VASTBidder) Request(req openrtb.BidRequest) ([]openrtb.Bid, error) {
 		return nil, err
 	}
 
-	adm := html.UnescapeString(string(body))
+	adm := string(body)
 	if adm == "" {
 		return nil, nil
 	}

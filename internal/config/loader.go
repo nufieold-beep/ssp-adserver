@@ -38,20 +38,20 @@ type Config struct {
 
 // AdapterConfig is the enterprise demand adapter config (replaces BidderConfig).
 type AdapterConfig struct {
-        ID          string   `yaml:"id" json:"id"`
-        Name        string   `yaml:"name" json:"name"`
-        Type        string   `yaml:"type" json:"type"` // "ortb" or "vast"
-        Endpoint    string   `yaml:"endpoint" json:"endpoint"`
-        TimeoutMs   int      `yaml:"timeout_ms" json:"timeout_ms"`
-        Floor       float64  `yaml:"floor" json:"floor"`
-        Margin      float64  `yaml:"margin" json:"margin"`
-        QPSLimit    int      `yaml:"qps_limit" json:"qps_limit"`
-        AuctionType string   `yaml:"auction_type" json:"auction_type"`
-        Status      int      `yaml:"status" json:"status"`
-        TargetGeos  []string `yaml:"target_geos" json:"target_geos"` // Targeting Configs
-        TargetOS    []string `yaml:"target_os" json:"target_os"`
-        BlockedBcat []string `yaml:"blocked_bcat" json:"blocked_bcat"`
-        AllowedMime []string `yaml:"allowed_mime" json:"allowed_mime"`
+	ID          string   `yaml:"id" json:"id"`
+	Name        string   `yaml:"name" json:"name"`
+	Type        string   `yaml:"type" json:"type"` // "ortb" or "vast"
+	Endpoint    string   `yaml:"endpoint" json:"endpoint"`
+	TimeoutMs   int      `yaml:"timeout_ms" json:"timeout_ms"`
+	Floor       float64  `yaml:"floor" json:"floor"`
+	Margin      float64  `yaml:"margin" json:"margin"`
+	QPSLimit    int      `yaml:"qps_limit" json:"qps_limit"`
+	AuctionType string   `yaml:"auction_type" json:"auction_type"`
+	Status      int      `yaml:"status" json:"status"`
+	TargetGeos  []string `yaml:"target_geos" json:"target_geos"` // Targeting Configs
+	TargetOS    []string `yaml:"target_os" json:"target_os"`
+	BlockedBcat []string `yaml:"blocked_bcat" json:"blocked_bcat"`
+	AllowedMime []string `yaml:"allowed_mime" json:"allowed_mime"`
 }
 
 // FloorRuleConfig represents a floor rule in the YAML config.
