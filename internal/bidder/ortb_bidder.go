@@ -17,7 +17,7 @@ type ORTBBidder struct {
 func NewORTBBidder(name, url string, timeoutMs int) *ORTBBidder {
 	t := time.Duration(timeoutMs) * time.Millisecond
 	if t == 0 {
-		t = 120 * time.Millisecond
+		t = 800 * time.Millisecond
 	}
 	return &ORTBBidder{
 		name:     name,

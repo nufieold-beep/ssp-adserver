@@ -300,12 +300,25 @@ func enrichFromSupplyTag(req *openrtb.BidRequest, tag *SupplyTag) {
 			req.App.StoreURL = tag.Domain
 		}
 		if tag.ContentGenre != "" {
-			req.App.Cat = strings.Split(tag.ContentGenre, ",")
+			cats := strings.Split(tag.ContentGenre, ",")
+			req.App.Cat = cats
+			// Enrich Content object for better DSP targeting
+			if req.App.Content == nil {
+				req.App.Content = &openrtb.Content{}
+			}
+			req.App.Content.Genre = tag.ContentGenre
+			req.App.Content.Cat = cats
 		}
 	}
 	// Content language
 	if tag.ContentLang != "" {
 		req.Device.Language = tag.ContentLang
+		if req.App != nil {
+			if req.App.Content == nil {
+				req.App.Content = &openrtb.Content{}
+			}
+			req.App.Content.Language = tag.ContentLang
+		}
 	}
 }
 
@@ -471,8 +484,10 @@ func vastHandler(mgr *bidder.Manager, metrics *monitor.Metrics, s *store, auctio
 		if tag == "" {
 			tag = c.Query("tag")
 		}
+		var supplyTag *SupplyTag
 		if tag != "" {
-			if st := s.lookupSupplyByTag(tag); st == nil {
+			supplyTag = s.lookupSupplyByTag(tag)
+			if supplyTag == nil {
 				return c.Status(403).JSON(fiber.Map{"error": "Unknown supply source"})
 			}
 		} else {
@@ -484,6 +499,9 @@ func vastHandler(mgr *bidder.Manager, metrics *monitor.Metrics, s *store, auctio
 		metrics.RecordAdOpp()
 
 		req := openrtb.BuildFromHTTP(c)
+
+		// Enrich request with supply tag config (floors, dimensions, app info)
+		enrichFromSupplyTag(&req, supplyTag)
 
 		// Validate request per PDF spec section 6
 		if err := validate.Request(&req); err != nil {

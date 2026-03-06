@@ -123,6 +123,17 @@ type App struct {
 	StoreURL string   `json:"storeurl,omitempty"`
 	Cat      []string `json:"cat,omitempty"`
 	Ver      string   `json:"ver,omitempty"`
+	Content  *Content `json:"content,omitempty"`
+}
+
+type Content struct {
+	ID       string   `json:"id,omitempty"`
+	Title    string   `json:"title,omitempty"`
+	Genre    string   `json:"genre,omitempty"`
+	Cat      []string `json:"cat,omitempty"`
+	Language string   `json:"language,omitempty"`
+	Len      int      `json:"len,omitempty"` // Content length in seconds
+	LiveStream int    `json:"livestream,omitempty"`
 }
 
 type Site struct {
@@ -252,32 +263,48 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 		country = ToAlpha3(country)
 	}
 
+	// StartDelay: 0=pre-roll (default), >0=mid-roll, -1=generic mid, -2=generic post
+	startDelay := 0
+	if sd := c.Query("startdelay"); sd != "" {
+		startDelay, _ = strconv.Atoi(sd)
+	}
+
+	// Placement: 1=in-stream (default for CTV)
+	placement := 1
+	if pl := c.Query("placement"); pl != "" {
+		placement, _ = strconv.Atoi(pl)
+	}
+
 	req := BidRequest{
 		ID:      reqID,
-		TMax:    500,
+		TMax:    800,
 		At:      1,
-		AllImps: 0,
+		AllImps: 1,
 		Cur:     []string{"USD"},
 		Imp: []Imp{
 			{
 				ID:          reqID,
 				BidFloor:    requestDefaults.BidFloor,
 				BidFloorCur: "USD",
-				Secure:      0,
+				Secure:      1,
 				Instl:       0,
 				TagID:       tagID,
 				Video: &Video{
-					Mimes:         []string{"video/mp4", "video/webm"},
-					Linearity:     1,
-					MinDuration:   minDur,
-					MaxDuration:   maxDur,
-					Protocols:     []int{2, 3, 5, 6, 7, 8},
-					W:             w,
-					H:             h,
-					Skip:          skippable,
-					Sequence:      1,
-					BoxingAllowed: 0,
-					Placement:     1,
+					Mimes:          []string{"video/mp4", "video/webm", "video/ogg", "application/x-mpegURL"},
+					Linearity:      1,
+					MinDuration:    minDur,
+					MaxDuration:    maxDur,
+					Protocols:      []int{2, 3, 5, 6, 7, 8, 11, 12},
+					W:              w,
+					H:              h,
+					Skip:           skippable,
+					Sequence:       1,
+					BoxingAllowed:  1,
+					Placement:      placement,
+					StartDelay:     &startDelay,
+					API:            []int{1, 2, 7},
+					PlaybackMethod: []int{1, 2, 6},
+					MaxExtended:    -1,
 				},
 			},
 		},
@@ -301,6 +328,8 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 			DeviceType: deviceType,
 			IFA:        ifa,
 			LMT:        lmt,
+			W:          w,
+			H:          h,
 			Language:   language,
 		},
 		Regs: &Regs{
@@ -324,9 +353,15 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 		req.Device.ConnectionType, _ = strconv.Atoi(ct)
 	}
 
-	// Content categories
+	// Content categories + Content object
 	if ctGenre := c.Query("ct_genre"); ctGenre != "" && req.App != nil {
-		req.App.Cat = strings.Split(ctGenre, ",")
+		cats := strings.Split(ctGenre, ",")
+		req.App.Cat = cats
+		req.App.Content = &Content{
+			Genre:    ctGenre,
+			Cat:      cats,
+			Language: language,
+		}
 	}
 
 	// Privacy overrides
