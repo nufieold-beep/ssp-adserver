@@ -35,9 +35,10 @@ type Bid struct {
 	Attr     []int    `json:"attr,omitempty"`   // Creative attributes
 	MType    any      `json:"mtype,omitempty"`  // OpenRTB 2.6: Creative markup type
 	AdvID    string   `json:"adv_id,omitempty"` // Advertiser ID for quality checks
-	Seat     string   `json:"-"`                // Populated from SeatBid.Seat
-	WinPrice float64  `json:"-"`                // Added internally for macro sub
-	Margin   float64  `json:"-"`                // Margin applied (so we can reverse it for DSP gross)
+	Seat      string   `json:"-"`                // Populated from SeatBid.Seat
+	WinPrice  float64  `json:"-"`                // Added internally for macro sub
+	Margin    float64  `json:"-"`                // Margin applied (so we can reverse it for DSP gross)
+	DemandSrc string   `json:"-"`                // Internal: adapter/demand source name
 }
 
 // SubstituteMacros replaces OpenRTB auction macros in a URL.

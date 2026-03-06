@@ -549,7 +549,7 @@ func vastHandler(mgr *bidder.Manager, metrics *monitor.Metrics, s *store, auctio
 		})
 
 		// Record ad decision
-		s.recordAdDecision(&req, winner, result.WinPrice, "ortb", "")
+		s.recordAdDecision(&req, winner, result.WinPrice, "ortb", winner.DemandSrc)
 
 		return c.Type("xml").SendString(xml)
 	}

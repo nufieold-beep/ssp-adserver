@@ -144,6 +144,7 @@ func (m *Manager) CallAll(req openrtb.BidRequest) []openrtb.Bid {
 				return
 			}
 			for _, bid := range bids {
+				bid.DemandSrc = b.Name()
 				bidChan <- bid
 			}
 		}(bidder)
