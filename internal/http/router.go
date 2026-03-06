@@ -1228,6 +1228,55 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 		if update.SlotID != "" {
 			t.SlotID = update.SlotID
 		}
+		if update.Integration != "" {
+			t.Integration = update.Integration
+		}
+		if update.Pricing != "" {
+			t.Pricing = update.Pricing
+		}
+		if update.Margin != 0 {
+			t.Margin = update.Margin
+		}
+		if update.Env != "" {
+			t.Env = update.Env
+		}
+		if update.MinDur != 0 {
+			t.MinDur = update.MinDur
+		}
+		if update.MaxDur != 0 {
+			t.MaxDur = update.MaxDur
+		}
+		if update.Width != 0 {
+			t.Width = update.Width
+		}
+		if update.Height != 0 {
+			t.Height = update.Height
+		}
+		if update.Channel != "" {
+			t.Channel = update.Channel
+		}
+		if update.CountryCode != "" {
+			t.CountryCode = update.CountryCode
+		}
+		if update.ContentGenre != "" {
+			t.ContentGenre = update.ContentGenre
+		}
+		if update.ContentLang != "" {
+			t.ContentLang = update.ContentLang
+		}
+		if update.DeviceType != 0 {
+			t.DeviceType = update.DeviceType
+		}
+		if update.AppName != "" {
+			t.AppName = update.AppName
+		}
+		if update.AppBundle != "" {
+			t.AppBundle = update.AppBundle
+		}
+		if update.Domain != "" {
+			t.Domain = update.Domain
+		}
+		t.Sensitive = update.Sensitive
 		t.VastURL = generateVastTagURL(t)
 		s.rebuildSupplyIndexLocked()
 		return c.JSON(t)
@@ -1343,7 +1392,7 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 			adapterID := fmt.Sprintf("demand-ep-%d", e.ID)
 			timeout := e.Timeout
 			if timeout == 0 {
-				timeout = 200
+				timeout = 800
 			}
 			acfg := &adapter.AdapterConfig{
 				ID: adapterID, Name: e.Name,
@@ -1401,6 +1450,15 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 		if update.QPS != 0 {
 			e.QPS = update.QPS
 		}
+		if update.Integration != "" {
+			e.Integration = update.Integration
+		}
+		if update.OrtbVersion != "" {
+			e.OrtbVersion = update.OrtbVersion
+		}
+		if update.AuctionType != "" {
+			e.AuctionType = update.AuctionType
+		}
 		e.GZIPSupport = update.GZIPSupport
 		e.RemovePChain = update.RemovePChain
 		e.BAdv = update.BAdv
@@ -1412,7 +1470,7 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 			adapterID := fmt.Sprintf("demand-ep-%d", id)
 			timeout := e.Timeout
 			if timeout == 0 {
-				timeout = 200
+				timeout = 800
 			}
 			acfg := &adapter.AdapterConfig{
 				ID: adapterID, Name: e.Name,
@@ -1503,7 +1561,7 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 			acfg := &adapter.AdapterConfig{
 				ID: adapterID, Name: t.Name,
 				Type:     adapter.TypeVAST,
-				Endpoint: t.URL, TimeoutMs: 200,
+				Endpoint: t.URL, TimeoutMs: 800,
 				Floor: t.Floor, Margin: t.Margin,
 				Status: 1,
 			}
@@ -1537,6 +1595,30 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 		if update.Floor != 0 {
 			t.Floor = update.Floor
 		}
+		if update.Margin != 0 {
+			t.Margin = update.Margin
+		}
+		if update.CPM != 0 {
+			t.CPM = update.CPM
+		}
+
+		// Re-register adapter with updated config for live hot-reload
+		if eDeps != nil && eDeps.Registry != nil && t.URL != "" {
+			adapterID := fmt.Sprintf("demand-vast-%d", id)
+			acfg := &adapter.AdapterConfig{
+				ID: adapterID, Name: t.Name,
+				Type:     adapter.TypeVAST,
+				Endpoint: t.URL, TimeoutMs: 800,
+				Floor: t.Floor, Margin: t.Margin,
+				Status: t.Status,
+			}
+			if t.Status == 1 {
+				eDeps.Registry.Register(adapter.NewVASTAdapter(acfg), acfg)
+			} else {
+				eDeps.Registry.Remove(adapterID)
+			}
+		}
+
 		return c.JSON(t)
 	})
 

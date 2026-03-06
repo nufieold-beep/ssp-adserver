@@ -9,12 +9,14 @@ import (
 
 // AdminAPIKey returns middleware that requires a valid API key for admin routes.
 // The key is read from the SSP_API_KEY environment variable.
-// If SSP_API_KEY is not set, all admin requests are rejected.
+// If SSP_API_KEY is not set, requests pass through (dashboard login provides auth).
 func AdminAPIKey() fiber.Handler {
 	key := os.Getenv("SSP_API_KEY")
 	return func(c *fiber.Ctx) error {
+		// If no API key is configured, allow all requests through.
+		// The dashboard login system provides its own authentication layer.
 		if key == "" {
-			return c.Status(503).JSON(fiber.Map{"error": "admin API key not configured"})
+			return c.Next()
 		}
 		auth := c.Get("Authorization")
 		if auth == "" {

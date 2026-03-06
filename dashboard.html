@@ -1188,7 +1188,7 @@ async function loadDemandOrtb() {
   } catch(e){}
 }
 
-function openDemandOrtbModal(){$('doModalTitle').textContent='New Demand Endpoint';$('doEditId').value='';$('doName').value='';$('doUrl').value='';$('doFloor').value='0';$('doMargin').value='0';$('doTimeoutMs').value='500';$('doQps').value='0';$('doBadv').value='';$('doBcat').value='';$('doGzip').checked=false;$('doRemovePchain').checked=false;$('doSchain').checked=false;openModal('demandOrtbModal');}
+function openDemandOrtbModal(){$('doModalTitle').textContent='New Demand Endpoint';$('doEditId').value='';$('doName').value='';$('doUrl').value='';$('doFloor').value='0';$('doMargin').value='0';$('doTimeoutMs').value='500';$('doQps').value='0';$('doBadv').value='';$('doBcat').value='';$('doGzip').checked=false;$('doRemovePchain').checked=false;$('doSchain').checked=false;$('doIntType').value='ortb';$('doOrtbVer').value='2.6';$('doAuction').value='first_price';openModal('demandOrtbModal');}
 
 async function editDemandOrtb(id) {
   try {
@@ -1199,6 +1199,9 @@ async function editDemandOrtb(id) {
     $('doTimeoutMs').value=e.timeout_ms||500;$('doQps').value=e.qps_limit||0;
     $('doBadv').value=(e.badv||[]).join(', ');$('doBcat').value=(e.bcat||[]).join(', ');
     $('doGzip').checked=!!e.gzip_support;$('doRemovePchain').checked=!!e.remove_pchain;$('doSchain').checked=!!e.schain_enabled;
+    if(e.integration)$('doIntType').value=e.integration;
+    if(e.ortb_version)$('doOrtbVer').value=e.ortb_version;
+    if(e.auction_type)$('doAuction').value=e.auction_type;
     openModal('demandOrtbModal');
   } catch(e){}
 }
