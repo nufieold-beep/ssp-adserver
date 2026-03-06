@@ -68,6 +68,14 @@ type TrafficEvent struct {
 	RequestID string    `json:"request_id"`
 	Env       string    `json:"environment"`
 	Details   string    `json:"details"`
+	DemandID  string    `json:"demand_id,omitempty"`
+	CreativeID string   `json:"creative_id,omitempty"`
+	Country   string    `json:"country,omitempty"`
+	IP        string    `json:"ip,omitempty"`
+	Source    string    `json:"source,omitempty"`
+	Bundle    string    `json:"bundle,omitempty"`
+	ADomain   string    `json:"adomain,omitempty"`
+	Price     string    `json:"price,omitempty"`
 }
 
 func New() *Metrics {
