@@ -77,42 +77,9 @@ func main() {
 			BlockedBcat: ac.BlockedBcat,
 			AllowedMime: ac.AllowedMime,
 		}
-		switch adapter.AdapterType(ac.Type) {
-		case adapter.TypeORTB:
-			a := adapter.NewORTBAdapter(acfg)
-			reg.Register(a, acfg)
-		case adapter.TypeVAST:
-			a := adapter.NewVASTAdapter(acfg)
-			reg.Register(a, acfg)
-		}
-	}
 
-	// Register legacy YAML bidders as enterprise adapters so ALL demand
-	// sources compete in one parallel FanOut auction.
-	for _, bc := range cfg.Bidders {
-		if bc.Status == 0 {
-			continue
-		}
-		if isPlaceholderEndpoint(bc.Endpoint) {
-			log.Printf("Skipping bidder %q: endpoint is placeholder or empty", bc.Name)
-			continue
-		}
-
-		id := "yaml-" + bc.Name
-		acfg := &adapter.AdapterConfig{
-			ID: id, Name: bc.Name,
-			Type:      adapter.AdapterType(bc.Type),
-			Endpoint:  bc.Endpoint,
-			TimeoutMs: bc.Timeout,
-			Floor:     bc.Floor,
-			Margin:    bc.Margin,
-			Status:    1,
-		}
-		switch adapter.AdapterType(bc.Type) {
-		case adapter.TypeORTB:
-			reg.Register(adapter.NewORTBAdapter(acfg), acfg)
-		case adapter.TypeVAST:
-			reg.Register(adapter.NewVASTAdapter(acfg), acfg)
+		if !adapter.RegisterFromConfig(reg, acfg) {
+			log.Printf("Skipping adapter %q: unsupported type %q", ac.Name, ac.Type)
 		}
 	}
 

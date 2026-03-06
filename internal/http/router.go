@@ -1,7 +1,9 @@
 package http
 
 import (
+	"crypto/rand"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,6 +28,7 @@ import (
 	"ssp/internal/vast"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/prebid/openrtb/v20/adcom1"
 )
 
 // ── In-memory stores ──
@@ -187,9 +190,10 @@ type store struct {
 	budgetDayKey   string
 	frequencyByKey map[string]int
 
-	dashboardUser string
-	dashboardPass string
-	statePath     string
+	dashboardUser     string
+	dashboardPass     string
+	dashboardSessions map[string]time.Time
+	statePath         string
 }
 
 type supplyDemandState struct {
@@ -236,7 +240,64 @@ func newStore() *store {
 		frequencyByKey:       make(map[string]int),
 		dashboardUser:        "admin",
 		dashboardPass:        "admin",
+		dashboardSessions:    make(map[string]time.Time),
 	}
+}
+
+func generateDashboardSessionToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+func (s *store) createDashboardSession() (string, error) {
+	token, err := generateDashboardSessionToken()
+	if err != nil {
+		return "", err
+	}
+
+	expires := time.Now().UTC().Add(24 * time.Hour)
+	s.mu.Lock()
+	if s.dashboardSessions == nil {
+		s.dashboardSessions = make(map[string]time.Time)
+	}
+	s.dashboardSessions[token] = expires
+	s.mu.Unlock()
+
+	return token, nil
+}
+
+func (s *store) validateDashboardSession(token string) bool {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return false
+	}
+
+	now := time.Now().UTC()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	expires, ok := s.dashboardSessions[token]
+	if !ok {
+		return false
+	}
+	if now.After(expires) {
+		delete(s.dashboardSessions, token)
+		return false
+	}
+	return true
+}
+
+func (s *store) clearDashboardSession(token string) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return
+	}
+	s.mu.Lock()
+	delete(s.dashboardSessions, token)
+	s.mu.Unlock()
 }
 
 func resolveSupplyDemandStatePath(configPath string) string {
@@ -498,24 +559,10 @@ func (s *store) registerPersistedDemandAdapters(reg *adapter.Registry) {
 		}
 
 		adapterID := fmt.Sprintf("demand-ep-%d", endpoint.ID)
-		acfg := &adapter.AdapterConfig{
-			ID: adapterID, Name: endpoint.Name,
-			Type:     adapter.AdapterType(endpoint.Integration),
-			Endpoint: endpoint.URL, TimeoutMs: normalizeDemandTimeoutMs(endpoint.Timeout),
-			Floor: endpoint.Floor, Margin: endpoint.Margin,
-			QPSLimit: endpoint.QPS, Status: endpoint.Status,
-			GZIPSupport:   endpoint.GZIPSupport,
-			RemovePChain:  endpoint.RemovePChain,
-			SChainEnabled: endpoint.SupplyChain,
-			BAdv:          endpoint.BAdv,
-			BCat:          endpoint.BCat,
-		}
+		acfg := buildDemandEndpointAdapterConfig(adapterID, endpoint)
 
-		switch adapter.AdapterType(endpoint.Integration) {
-		case adapter.TypeVAST:
-			reg.Register(adapter.NewVASTAdapter(acfg), acfg)
-		default:
-			reg.Register(adapter.NewORTBAdapter(acfg), acfg)
+		if !adapter.RegisterFromConfig(reg, acfg) {
+			log.Printf("Skipping persisted demand endpoint %d (%s): unsupported integration %q", endpoint.ID, endpoint.Name, endpoint.Integration)
 		}
 	}
 
@@ -529,14 +576,10 @@ func (s *store) registerPersistedDemandAdapters(reg *adapter.Registry) {
 		}
 
 		adapterID := fmt.Sprintf("demand-vast-%d", demandVastTag.ID)
-		acfg := &adapter.AdapterConfig{
-			ID: adapterID, Name: demandVastTag.Name,
-			Type:     adapter.TypeVAST,
-			Endpoint: demandVastTag.URL, TimeoutMs: normalizeDemandTimeoutMs(0),
-			Floor: demandVastTag.Floor, Margin: demandVastTag.Margin,
-			Status: demandVastTag.Status,
+		acfg := buildDemandVASTAdapterConfig(adapterID, demandVastTag)
+		if !adapter.RegisterFromConfig(reg, acfg) {
+			log.Printf("Skipping persisted demand VAST tag %d (%s): unsupported adapter type", demandVastTag.ID, demandVastTag.Name)
 		}
-		reg.Register(adapter.NewVASTAdapter(acfg), acfg)
 	}
 }
 
@@ -607,23 +650,28 @@ func enrichFromSupplyTag(req *openrtb.BidRequest, tag *SupplyTag) {
 	if tag == nil || len(req.Imp) == 0 {
 		return
 	}
+	if req.Device == nil {
+		req.Device = &openrtb.Device{}
+	}
 	// Floor: use tag floor (override default $5)
 	if tag.Floor > 0 {
 		req.Imp[0].BidFloor = tag.Floor
 	}
 	// Dimensions
 	if tag.Width > 0 && req.Imp[0].Video != nil {
-		req.Imp[0].Video.W = tag.Width
+		w := int64(tag.Width)
+		req.Imp[0].Video.W = &w
 	}
 	if tag.Height > 0 && req.Imp[0].Video != nil {
-		req.Imp[0].Video.H = tag.Height
+		h := int64(tag.Height)
+		req.Imp[0].Video.H = &h
 	}
 	// Duration
 	if tag.MinDur > 0 && req.Imp[0].Video != nil {
-		req.Imp[0].Video.MinDuration = tag.MinDur
+		req.Imp[0].Video.MinDuration = int64(tag.MinDur)
 	}
 	if tag.MaxDur > 0 && req.Imp[0].Video != nil {
-		req.Imp[0].Video.MaxDuration = tag.MaxDur
+		req.Imp[0].Video.MaxDuration = int64(tag.MaxDur)
 	}
 	// Slot ID
 	if tag.SlotID != "" {
@@ -637,7 +685,7 @@ func enrichFromSupplyTag(req *openrtb.BidRequest, tag *SupplyTag) {
 	}
 	// Device type from supply tag env
 	if tag.DeviceType > 0 {
-		req.Device.DeviceType = tag.DeviceType
+		req.Device.DeviceType = adcom1.DeviceType(tag.DeviceType)
 	}
 	// Country code (convert to alpha-3)
 	if tag.CountryCode != "" {
@@ -648,7 +696,7 @@ func enrichFromSupplyTag(req *openrtb.BidRequest, tag *SupplyTag) {
 		if req.Device.Geo != nil {
 			req.Device.Geo.Country = cc
 		} else {
-			req.Device.Geo = &openrtb.Geo{Country: cc, Type: 2}
+			req.Device.Geo = &openrtb.Geo{Country: cc, Type: adcom1.LocationType(2)}
 		}
 	}
 	// App fields: runtime values from the publisher's request take priority.
@@ -738,10 +786,10 @@ func buildDeliveryUserKey(req *openrtb.BidRequest) string {
 	if req.User != nil && strings.TrimSpace(req.User.ID) != "" {
 		return "uid:" + strings.TrimSpace(req.User.ID)
 	}
-	if strings.TrimSpace(req.Device.IFA) != "" {
+	if req.Device != nil && strings.TrimSpace(req.Device.IFA) != "" {
 		return "ifa:" + strings.TrimSpace(req.Device.IFA)
 	}
-	if strings.TrimSpace(req.Device.IP) != "" {
+	if req.Device != nil && strings.TrimSpace(req.Device.IP) != "" {
 		bundle := ""
 		if req.App != nil {
 			bundle = strings.TrimSpace(req.App.Bundle)
@@ -866,10 +914,10 @@ func winnerPrimaryDomain(winner *openrtb.Bid) string {
 }
 
 func requestEnvironment(req *openrtb.BidRequest) string {
-	if req == nil {
+	if req == nil || req.Device == nil {
 		return "CTV"
 	}
-	switch req.Device.DeviceType {
+	switch int(req.Device.DeviceType) {
 	case 1, 4, 5:
 		return "Mobile"
 	case 2:
@@ -892,11 +940,11 @@ func (s *store) recordAdDecision(req *openrtb.BidRequest, winner *openrtb.Bid, w
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	country := ""
-	if req.Device.Geo != nil {
+	if req != nil && req.Device != nil && req.Device.Geo != nil {
 		country = req.Device.Geo.Country
 	}
 	appBundle := ""
-	if req.App != nil {
+	if req != nil && req.App != nil {
 		appBundle = req.App.Bundle
 	}
 	adomain := ""
@@ -904,16 +952,18 @@ func (s *store) recordAdDecision(req *openrtb.BidRequest, winner *openrtb.Bid, w
 		adomain = winner.ADomain[0]
 	}
 	devType := "CTV"
-	switch req.Device.DeviceType {
-	case 1:
+	switch {
+	case req == nil || req.Device == nil:
+		devType = "CTV"
+	case int(req.Device.DeviceType) == 1:
 		devType = "Mobile"
-	case 2:
+	case int(req.Device.DeviceType) == 2:
 		devType = "Desktop"
-	case 4:
+	case int(req.Device.DeviceType) == 4:
 		devType = "Phone"
-	case 5:
+	case int(req.Device.DeviceType) == 5:
 		devType = "Tablet"
-	case 7:
+	case int(req.Device.DeviceType) == 7:
 		devType = "STB"
 	}
 
@@ -937,6 +987,46 @@ func normalizeDemandTimeoutMs(timeoutMs int) int {
 		return 500
 	}
 	return timeoutMs
+}
+
+func normalizeDemandIntegration(integration string) adapter.AdapterType {
+	if strings.EqualFold(strings.TrimSpace(integration), string(adapter.TypeVAST)) {
+		return adapter.TypeVAST
+	}
+	return adapter.TypeORTB
+}
+
+func buildDemandEndpointAdapterConfig(adapterID string, endpoint *DemandEndpoint) *adapter.AdapterConfig {
+	if endpoint == nil {
+		return nil
+	}
+
+	return &adapter.AdapterConfig{
+		ID: adapterID, Name: endpoint.Name,
+		Type:     normalizeDemandIntegration(endpoint.Integration),
+		Endpoint: endpoint.URL, TimeoutMs: normalizeDemandTimeoutMs(endpoint.Timeout),
+		Floor: endpoint.Floor, Margin: endpoint.Margin,
+		QPSLimit: endpoint.QPS, Status: endpoint.Status,
+		GZIPSupport:   endpoint.GZIPSupport,
+		RemovePChain:  endpoint.RemovePChain,
+		SChainEnabled: endpoint.SupplyChain,
+		BAdv:          endpoint.BAdv,
+		BCat:          endpoint.BCat,
+	}
+}
+
+func buildDemandVASTAdapterConfig(adapterID string, tag *DemandVastTag) *adapter.AdapterConfig {
+	if tag == nil {
+		return nil
+	}
+
+	return &adapter.AdapterConfig{
+		ID: adapterID, Name: tag.Name,
+		Type:     adapter.TypeVAST,
+		Endpoint: tag.URL, TimeoutMs: normalizeDemandTimeoutMs(0),
+		Floor: tag.Floor, Margin: tag.Margin,
+		Status: tag.Status,
+	}
 }
 
 // ── Router ──
@@ -1009,7 +1099,7 @@ func NewRouterWithDeps(cfg *config.Config, metrics *monitor.Metrics, configPath 
 	registerAuthRoutes(app, s)
 
 	// ─── Admin: Campaigns CRUD ───
-	auth := AdminAPIKey()
+	auth := AdminAPIKey(s)
 	registerCampaignRoutes(app, s, auth)
 
 	// ─── Admin: Advertisers CRUD ───
@@ -1672,7 +1762,41 @@ func registerAuthRoutes(app *fiber.App, s *store) {
 		if !userOK || !passOK {
 			return c.Status(401).JSON(fiber.Map{"error": "Invalid username or password"})
 		}
+
+		token, err := s.createDashboardSession()
+		if err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "Failed to create dashboard session"})
+		}
+
+		secureCookie := strings.EqualFold(c.Protocol(), "https")
+		c.Cookie(&fiber.Cookie{
+			Name:     dashboardSessionCookieName,
+			Value:    token,
+			HTTPOnly: true,
+			SameSite: "Lax",
+			Secure:   secureCookie,
+			Path:     "/",
+			MaxAge:   86400,
+			Expires:  time.Now().Add(24 * time.Hour),
+		})
+
 		return c.JSON(fiber.Map{"success": true, "user": user})
+	})
+
+	app.Post("/api/v1/auth/logout", func(c *fiber.Ctx) error {
+		token := c.Cookies(dashboardSessionCookieName)
+		s.clearDashboardSession(token)
+		c.Cookie(&fiber.Cookie{
+			Name:     dashboardSessionCookieName,
+			Value:    "",
+			HTTPOnly: true,
+			SameSite: "Lax",
+			Secure:   strings.EqualFold(c.Protocol(), "https"),
+			Path:     "/",
+			MaxAge:   -1,
+			Expires:  time.Unix(0, 0),
+		})
+		return c.JSON(fiber.Map{"success": true})
 	})
 
 	// Change password — requires current password for verification
@@ -1700,6 +1824,7 @@ func registerAuthRoutes(app *fiber.App, s *store) {
 			s.dashboardUser = body.NewUsername
 		}
 		s.dashboardPass = body.NewPassword
+		s.dashboardSessions = make(map[string]time.Time)
 		return c.JSON(fiber.Map{"success": true, "message": "Credentials updated"})
 	}
 
@@ -1728,8 +1853,12 @@ func registerSettingsRoutes(app *fiber.App, cfg *config.Config, configPath strin
 			return c.Status(400).JSON(fiber.Map{"error": "Invalid input"})
 		}
 		cfg.Server = update.Server
-		if len(update.Bidders) > 0 {
-			cfg.Bidders = update.Bidders
+		if len(update.Adapters) > 0 {
+			cfg.Adapters = update.Adapters
+			cfg.Bidders = nil
+		} else if len(update.Bidders) > 0 {
+			cfg.Adapters = config.LegacyBiddersToAdapters(update.Bidders)
+			cfg.Bidders = nil
 		}
 		if configPath != "" {
 			if err := cfg.Save(configPath); err != nil {
@@ -1980,24 +2109,9 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 		// Live-register as enterprise adapter for real-time parallel bidding
 		if eDeps != nil && eDeps.Registry != nil && e.Status == 1 && e.URL != "" {
 			adapterID := fmt.Sprintf("demand-ep-%d", e.ID)
-			timeout := normalizeDemandTimeoutMs(e.Timeout)
-			acfg := &adapter.AdapterConfig{
-				ID: adapterID, Name: e.Name,
-				Type:     adapter.AdapterType(e.Integration),
-				Endpoint: e.URL, TimeoutMs: timeout,
-				Floor: e.Floor, Margin: e.Margin,
-				QPSLimit: e.QPS, Status: 1,
-				GZIPSupport:   e.GZIPSupport,
-				RemovePChain:  e.RemovePChain,
-				SChainEnabled: e.SupplyChain,
-				BAdv:          e.BAdv,
-				BCat:          e.BCat,
-			}
-			switch adapter.AdapterType(e.Integration) {
-			case adapter.TypeVAST:
-				eDeps.Registry.Register(adapter.NewVASTAdapter(acfg), acfg)
-			default:
-				eDeps.Registry.Register(adapter.NewORTBAdapter(acfg), acfg)
+			acfg := buildDemandEndpointAdapterConfig(adapterID, &e)
+			if !adapter.RegisterFromConfig(eDeps.Registry, acfg) {
+				log.Printf("Skipping demand endpoint %d (%s): unsupported integration %q", e.ID, e.Name, e.Integration)
 			}
 		}
 
@@ -2061,25 +2175,10 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 		// Re-register adapter with updated config for live hot-reload
 		if eDeps != nil && eDeps.Registry != nil && e.URL != "" {
 			adapterID := fmt.Sprintf("demand-ep-%d", id)
-			timeout := normalizeDemandTimeoutMs(e.Timeout)
-			acfg := &adapter.AdapterConfig{
-				ID: adapterID, Name: e.Name,
-				Type:     adapter.AdapterType(e.Integration),
-				Endpoint: e.URL, TimeoutMs: timeout,
-				Floor: e.Floor, Margin: e.Margin,
-				QPSLimit: e.QPS, Status: e.Status,
-				GZIPSupport:   e.GZIPSupport,
-				RemovePChain:  e.RemovePChain,
-				SChainEnabled: e.SupplyChain,
-				BAdv:          e.BAdv,
-				BCat:          e.BCat,
-			}
+			acfg := buildDemandEndpointAdapterConfig(adapterID, e)
 			if e.Status == 1 {
-				switch adapter.AdapterType(e.Integration) {
-				case adapter.TypeVAST:
-					eDeps.Registry.Register(adapter.NewVASTAdapter(acfg), acfg)
-				default:
-					eDeps.Registry.Register(adapter.NewORTBAdapter(acfg), acfg)
+				if !adapter.RegisterFromConfig(eDeps.Registry, acfg) {
+					log.Printf("Skipping demand endpoint %d (%s): unsupported integration %q", id, e.Name, e.Integration)
 				}
 			} else {
 				eDeps.Registry.Remove(adapterID)
@@ -2155,14 +2254,10 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 		// Live-register VAST tag as enterprise adapter for real-time parallel bidding
 		if eDeps != nil && eDeps.Registry != nil && t.Status == 1 && t.URL != "" {
 			adapterID := fmt.Sprintf("demand-vast-%d", t.ID)
-			acfg := &adapter.AdapterConfig{
-				ID: adapterID, Name: t.Name,
-				Type:     adapter.TypeVAST,
-				Endpoint: t.URL, TimeoutMs: normalizeDemandTimeoutMs(0),
-				Floor: t.Floor, Margin: t.Margin,
-				Status: 1,
+			acfg := buildDemandVASTAdapterConfig(adapterID, &t)
+			if !adapter.RegisterFromConfig(eDeps.Registry, acfg) {
+				log.Printf("Skipping demand VAST tag %d (%s): unsupported adapter type", t.ID, t.Name)
 			}
-			eDeps.Registry.Register(adapter.NewVASTAdapter(acfg), acfg)
 		}
 
 		return c.Status(201).JSON(t)
@@ -2208,15 +2303,11 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 		// Re-register adapter with updated config for live hot-reload
 		if eDeps != nil && eDeps.Registry != nil && t.URL != "" {
 			adapterID := fmt.Sprintf("demand-vast-%d", id)
-			acfg := &adapter.AdapterConfig{
-				ID: adapterID, Name: t.Name,
-				Type:     adapter.TypeVAST,
-				Endpoint: t.URL, TimeoutMs: normalizeDemandTimeoutMs(0),
-				Floor: t.Floor, Margin: t.Margin,
-				Status: t.Status,
-			}
+			acfg := buildDemandVASTAdapterConfig(adapterID, t)
 			if t.Status == 1 {
-				eDeps.Registry.Register(adapter.NewVASTAdapter(acfg), acfg)
+				if !adapter.RegisterFromConfig(eDeps.Registry, acfg) {
+					log.Printf("Skipping demand VAST tag %d (%s): unsupported adapter type", id, t.Name)
+				}
 			} else {
 				eDeps.Registry.Remove(adapterID)
 			}

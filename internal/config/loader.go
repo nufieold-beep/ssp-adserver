@@ -1,7 +1,9 @@
 package config
 
 import (
+	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -30,7 +32,7 @@ type ServerConfig struct {
 
 type Config struct {
 	Server     ServerConfig      `yaml:"server" json:"server"`
-	Bidders    []BidderConfig    `yaml:"bidders" json:"bidders"`
+	Bidders    []BidderConfig    `yaml:"bidders,omitempty" json:"bidders,omitempty"`
 	Adapters   []AdapterConfig   `yaml:"adapters,omitempty" json:"adapters,omitempty"`
 	FloorRules []FloorRuleConfig `yaml:"floor_rules,omitempty" json:"floor_rules,omitempty"`
 	AdQuality  AdQualityConfig   `yaml:"ad_quality,omitempty" json:"ad_quality,omitempty"`
@@ -114,13 +116,92 @@ func Load(path string) (*Config, error) {
 		cfg.Server.ORTBMaxDur = 30
 	}
 
+	if len(cfg.Adapters) == 0 && len(cfg.Bidders) > 0 {
+		cfg.Adapters = LegacyBiddersToAdapters(cfg.Bidders)
+		cfg.Bidders = nil
+	}
+
 	return &cfg, nil
 }
 
 func (c *Config) Save(path string) error {
+	if len(c.Adapters) > 0 {
+		// Persist using the adapter model once converted.
+		c.Bidders = nil
+	}
+
 	data, err := yaml.Marshal(c)
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(path, data, 0600)
+}
+
+// LegacyBiddersToAdapters migrates deprecated bidder config entries into
+// enterprise adapter entries so runtime code has a single demand path.
+func LegacyBiddersToAdapters(bidders []BidderConfig) []AdapterConfig {
+	if len(bidders) == 0 {
+		return nil
+	}
+
+	adapters := make([]AdapterConfig, 0, len(bidders))
+	seenIDs := make(map[string]int)
+
+	for i, bidder := range bidders {
+		name := strings.TrimSpace(bidder.Name)
+		if name == "" {
+			continue
+		}
+
+		baseID := legacyAdapterID(name, i+1)
+		seenIDs[baseID]++
+		id := baseID
+		if seenIDs[baseID] > 1 {
+			id = fmt.Sprintf("%s-%d", baseID, seenIDs[baseID])
+		}
+
+		typeName := strings.ToLower(strings.TrimSpace(bidder.Type))
+		if typeName != "vast" {
+			typeName = "ortb"
+		}
+
+		adapters = append(adapters, AdapterConfig{
+			ID:        id,
+			Name:      name,
+			Type:      typeName,
+			Endpoint:  bidder.Endpoint,
+			TimeoutMs: bidder.Timeout,
+			Floor:     bidder.Floor,
+			Margin:    bidder.Margin,
+			Status:    bidder.Status,
+		})
+	}
+
+	return adapters
+}
+
+func legacyAdapterID(name string, fallbackIndex int) string {
+	clean := strings.ToLower(strings.TrimSpace(name))
+	if clean == "" {
+		return fmt.Sprintf("legacy-%d", fallbackIndex)
+	}
+
+	var b strings.Builder
+	b.Grow(len(clean))
+	for _, r := range clean {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '-', r == '_', r == ' ':
+			b.WriteRune('-')
+		}
+	}
+
+	trimmed := strings.Trim(b.String(), "-")
+	if trimmed == "" {
+		return fmt.Sprintf("legacy-%d", fallbackIndex)
+	}
+	return "legacy-" + trimmed
 }

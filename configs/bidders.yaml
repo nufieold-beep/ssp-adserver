@@ -5,19 +5,4 @@ server:
   default_tmax: 500
   dashboard_path: "dashboard.html"
 
-bidders:
-  - name: dsp1
-    type: ortb
-    endpoint: https://example-dsp.com/openrtb
-    timeout: 800
-    floor: 5.00
-    margin: 0.15
-    status: 1
-
-  - name: network1
-    type: vast
-    endpoint: https://ads.network.com/vast
-    timeout: 800
-    floor: 3.00
-    margin: 0.10
-    status: 1
+adapters: []
