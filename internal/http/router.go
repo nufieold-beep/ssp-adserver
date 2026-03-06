@@ -80,18 +80,22 @@ type SupplyTag struct {
 }
 
 type DemandEndpoint struct {
-	ID          int     `json:"id"`
-	Name        string  `json:"name"`
-	URL         string  `json:"endpoint_url"`
-	Integration string  `json:"integration"`
-	OrtbVersion string  `json:"ortb_version"`
-	AuctionType string  `json:"auction_type"`
-	Floor       float64 `json:"floor"`
-	Timeout     int     `json:"timeout_ms"`
-	QPS         int     `json:"qps_limit"`
-	Sensitive   bool    `json:"sensitive"`
-	Margin      float64 `json:"margin"`
-	Status      int     `json:"status"`
+	ID            int      `json:"id"`
+	Name          string   `json:"name"`
+	URL           string   `json:"endpoint_url"`
+	Integration   string   `json:"integration"`
+	OrtbVersion   string   `json:"ortb_version"`
+	AuctionType   string   `json:"auction_type"`
+	Floor         float64  `json:"floor"`
+	Timeout       int      `json:"timeout_ms"`
+	QPS           int      `json:"qps_limit"`
+	Sensitive     bool     `json:"sensitive"`
+	Margin        float64  `json:"margin"`
+	Status        int      `json:"status"`
+	GZIPSupport   bool     `json:"gzip_support"`
+	RemovePChain  bool     `json:"remove_pchain"`
+	BAdv          []string `json:"badv"`
+	BCat          []string `json:"bcat"`
 }
 
 type DemandVastTag struct {
@@ -1319,6 +1323,19 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 		if update.Floor != 0 {
 			e.Floor = update.Floor
 		}
+		if update.Margin != 0 {
+			e.Margin = update.Margin
+		}
+		if update.Timeout != 0 {
+			e.Timeout = update.Timeout
+		}
+		if update.QPS != 0 {
+			e.QPS = update.QPS
+		}
+		e.GZIPSupport = update.GZIPSupport
+		e.RemovePChain = update.RemovePChain
+		e.BAdv = update.BAdv
+		e.BCat = update.BCat
 		return c.JSON(e)
 	})
 

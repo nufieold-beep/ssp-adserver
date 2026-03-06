@@ -420,7 +420,7 @@ textarea{resize:vertical;min-height:68px}
   </div>
   <div class="card">
     <div class="card-body table-wrap">
-      <table><thead><tr><th>ID</th><th>Name</th><th>Endpoint</th><th>Auction</th><th>Floor</th><th>Timeout</th><th>QPS</th><th>Margin</th><th>Status</th><th>Actions</th></tr></thead>
+      <table><thead><tr><th>ID</th><th>Name</th><th>Endpoint</th><th>Auction</th><th>Floor</th><th>Timeout</th><th>QPS</th><th>Margin</th><th>GZIP</th><th>PChain</th><th>Status</th><th>Actions</th></tr></thead>
         <tbody id="doBody"><tr><td colspan="10" class="empty">Loading...</td></tr></tbody>
       </table>
     </div>
@@ -676,6 +676,16 @@ textarea{resize:vertical;min-height:68px}
       <div class="form-row">
         <div class="form-group"><label>Timeout (ms)</label><input id="doTimeoutMs" type="number" value="500"></div>
         <div class="form-group"><label>QPS Limit (0=∞)</label><input id="doQps" type="number" value="0"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group full"><label>Blocked Advertisers (badv)</label><input id="doBadv" placeholder="domain1.com, domain2.com (comma separated)"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group full"><label>Blocked Categories (bcat)</label><input id="doBcat" placeholder="IAB25-3, IAB7-39 (comma separated)"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="doGzip"> GZIP Support</label></div>
+        <div class="form-group"><label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="doRemovePchain"> Remove PChain</label></div>
       </div>
     </div>
     <div class="modal-footer">
@@ -1151,16 +1161,17 @@ async function loadDemandOrtb() {
       <td>${e.id}</td><td><strong>${esc(e.name)}</strong></td><td title="${esc(e.endpoint_url)}">${esc(truncUrl(e.endpoint_url))}</td>
       <td>${esc(e.auction_type||'first_price')}</td><td>${fmtMoney(e.floor)}</td>
       <td>${e.timeout_ms||0}ms</td><td>${e.qps_limit||'∞'}</td><td>${(e.margin||0).toFixed(1)}%</td>
+      <td>${e.gzip_support?'✓':'—'}</td><td>${e.remove_pchain?'✓':'—'}</td>
       <td>${badge(e.status)}</td>
       <td>
         <button class="btn btn-secondary btn-sm" onclick="editDemandOrtb(${e.id})">Edit</button>
         <button class="btn btn-danger btn-sm" onclick="deleteDemandOrtb(${e.id})">Del</button>
       </td>
-    </tr>`).join(''):'<tr><td colspan="10" class="empty">No endpoints</td></tr>';
+    </tr>`).join(''):'<tr><td colspan="12" class="empty">No endpoints</td></tr>';
   } catch(e){}
 }
 
-function openDemandOrtbModal(){$('doModalTitle').textContent='New Demand Endpoint';$('doEditId').value='';$('doName').value='';$('doUrl').value='';$('doFloor').value='0';$('doMargin').value='0';$('doTimeoutMs').value='500';$('doQps').value='0';openModal('demandOrtbModal');}
+function openDemandOrtbModal(){$('doModalTitle').textContent='New Demand Endpoint';$('doEditId').value='';$('doName').value='';$('doUrl').value='';$('doFloor').value='0';$('doMargin').value='0';$('doTimeoutMs').value='500';$('doQps').value='0';$('doBadv').value='';$('doBcat').value='';$('doGzip').checked=false;$('doRemovePchain').checked=false;openModal('demandOrtbModal');}
 
 async function editDemandOrtb(id) {
   try {
@@ -1169,13 +1180,15 @@ async function editDemandOrtb(id) {
     $('doName').value=e.name;$('doUrl').value=e.endpoint_url;
     $('doFloor').value=e.floor||0;$('doMargin').value=e.margin||0;
     $('doTimeoutMs').value=e.timeout_ms||500;$('doQps').value=e.qps_limit||0;
+    $('doBadv').value=(e.badv||[]).join(', ');$('doBcat').value=(e.bcat||[]).join(', ');
+    $('doGzip').checked=!!e.gzip_support;$('doRemovePchain').checked=!!e.remove_pchain;
     openModal('demandOrtbModal');
   } catch(e){}
 }
 
 async function saveDemandOrtb() {
   const id=$v('doEditId');
-  const body={name:$v('doName'),endpoint_url:$v('doUrl'),integration:$v('doIntType'),ortb_version:$v('doOrtbVer'),auction_type:$v('doAuction'),floor:parseFloat($v('doFloor'))||0,margin:parseFloat($v('doMargin'))||0,timeout_ms:parseInt($v('doTimeoutMs'))||500,qps_limit:parseInt($v('doQps'))||0};
+  const body={name:$v('doName'),endpoint_url:$v('doUrl'),integration:$v('doIntType'),ortb_version:$v('doOrtbVer'),auction_type:$v('doAuction'),floor:parseFloat($v('doFloor'))||0,margin:parseFloat($v('doMargin'))||0,timeout_ms:parseInt($v('doTimeoutMs'))||500,qps_limit:parseInt($v('doQps'))||0,gzip_support:$('doGzip').checked,remove_pchain:$('doRemovePchain').checked,badv:$v('doBadv').split(',').map(s=>s.trim()).filter(Boolean),bcat:$v('doBcat').split(',').map(s=>s.trim()).filter(Boolean)};
   if(!body.name||!body.endpoint_url)return toast('Name and URL required','error');
   try {
     if(id){await api(`${SD}/demand-endpoints/${id}`,{method:'PUT',body});toast('Updated');}
