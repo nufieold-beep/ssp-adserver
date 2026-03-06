@@ -21,6 +21,13 @@ type Rule struct {
 	Hours       []int    `json:"hours" yaml:"hours"`             // 0-23 UTC hours
 	MediaTypes  []string `json:"media_types" yaml:"media_types"` // "video", "banner"
 	Status      int      `json:"status" yaml:"status"`           // 1=active
+
+	// Normalized lookup sets for fast request-path matching.
+	geoSet       map[string]struct{} `json:"-" yaml:"-"`
+	deviceSet    map[int]struct{}    `json:"-" yaml:"-"`
+	bundleSet    map[string]struct{} `json:"-" yaml:"-"`
+	hourSet      map[int]struct{}    `json:"-" yaml:"-"`
+	mediaTypeSet map[string]struct{} `json:"-" yaml:"-"`
 }
 
 // Engine computes floor prices using rule-based matching plus an adaptive
@@ -40,6 +47,7 @@ func NewEngine() *Engine {
 // AddRule adds a floor rule and re-sorts by priority.
 func (e *Engine) AddRule(r *Rule) {
 	e.mu.Lock()
+	normalizeRule(r)
 	e.rules = append(e.rules, r)
 	sortRules(e.rules)
 	e.mu.Unlock()
@@ -81,12 +89,14 @@ func (e *Engine) UpdateAvgPrice(avg float64) {
 func (e *Engine) Calculate(req *openrtb.BidRequest) float64 {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
+	ctx := buildRuleMatchCtx(req)
+	hourUTC := time.Now().UTC().Hour()
 
 	for _, r := range e.rules {
 		if r.Status != 1 {
 			continue
 		}
-		if matchesRule(r, req) {
+		if matchesRule(r, ctx, hourUTC) {
 			return r.FloorCPM
 		}
 	}
@@ -98,91 +108,128 @@ func (e *Engine) Calculate(req *openrtb.BidRequest) float64 {
 	return 0
 }
 
-func matchesRule(r *Rule, req *openrtb.BidRequest) bool {
-	if !matchRuleGeo(r, req) {
+type ruleMatchCtx struct {
+	country    string
+	deviceType int
+	bundle     string
+	hasVideo   bool
+}
+
+func buildRuleMatchCtx(req *openrtb.BidRequest) ruleMatchCtx {
+	ctx := ruleMatchCtx{}
+	if req == nil {
+		return ctx
+	}
+	ctx.deviceType = req.Device.DeviceType
+	if req.Device.Geo != nil {
+		ctx.country = strings.ToUpper(strings.TrimSpace(req.Device.Geo.Country))
+	}
+	if req.App != nil {
+		ctx.bundle = strings.ToLower(strings.TrimSpace(req.App.Bundle))
+	}
+	ctx.hasVideo = len(req.Imp) > 0 && req.Imp[0].Video != nil
+	return ctx
+}
+
+func normalizeRule(r *Rule) {
+	r.geoSet = make(map[string]struct{}, len(r.Geos))
+	for _, g := range r.Geos {
+		n := strings.ToUpper(strings.TrimSpace(g))
+		if n != "" {
+			r.geoSet[n] = struct{}{}
+		}
+	}
+
+	r.deviceSet = make(map[int]struct{}, len(r.DeviceTypes))
+	for _, dt := range r.DeviceTypes {
+		r.deviceSet[dt] = struct{}{}
+	}
+
+	r.bundleSet = make(map[string]struct{}, len(r.AppBundles))
+	for _, b := range r.AppBundles {
+		n := strings.ToLower(strings.TrimSpace(b))
+		if n != "" {
+			r.bundleSet[n] = struct{}{}
+		}
+	}
+
+	r.hourSet = make(map[int]struct{}, len(r.Hours))
+	for _, h := range r.Hours {
+		r.hourSet[h] = struct{}{}
+	}
+
+	r.mediaTypeSet = make(map[string]struct{}, len(r.MediaTypes))
+	for _, m := range r.MediaTypes {
+		n := strings.ToLower(strings.TrimSpace(m))
+		if n != "" {
+			r.mediaTypeSet[n] = struct{}{}
+		}
+	}
+}
+
+func matchesRule(r *Rule, ctx ruleMatchCtx, hourUTC int) bool {
+	if !matchRuleGeo(r, ctx) {
 		return false
 	}
-	if !matchRuleDevice(r, req) {
+	if !matchRuleDevice(r, ctx) {
 		return false
 	}
-	if !matchRuleBundle(r, req) {
+	if !matchRuleBundle(r, ctx) {
 		return false
 	}
-	if !matchRuleHour(r) {
+	if !matchRuleHour(r, hourUTC) {
 		return false
 	}
-	if !matchRuleMedia(r, req) {
+	if !matchRuleMedia(r, ctx) {
 		return false
 	}
 	return true
 }
 
-func matchRuleGeo(r *Rule, req *openrtb.BidRequest) bool {
-	if len(r.Geos) == 0 {
+func matchRuleGeo(r *Rule, ctx ruleMatchCtx) bool {
+	if len(r.geoSet) == 0 {
 		return true
 	}
-	if req.Device.Geo == nil || req.Device.Geo.Country == "" {
+	if ctx.country == "" {
 		return false
 	}
-	country := strings.ToUpper(req.Device.Geo.Country)
-	for _, g := range r.Geos {
-		if strings.ToUpper(g) == country {
-			return true
-		}
-	}
-	return false
+	_, ok := r.geoSet[ctx.country]
+	return ok
 }
 
-func matchRuleDevice(r *Rule, req *openrtb.BidRequest) bool {
-	if len(r.DeviceTypes) == 0 {
+func matchRuleDevice(r *Rule, ctx ruleMatchCtx) bool {
+	if len(r.deviceSet) == 0 {
 		return true
 	}
-	for _, dt := range r.DeviceTypes {
-		if dt == req.Device.DeviceType {
-			return true
-		}
-	}
-	return false
+	_, ok := r.deviceSet[ctx.deviceType]
+	return ok
 }
 
-func matchRuleBundle(r *Rule, req *openrtb.BidRequest) bool {
-	if len(r.AppBundles) == 0 {
+func matchRuleBundle(r *Rule, ctx ruleMatchCtx) bool {
+	if len(r.bundleSet) == 0 {
 		return true
 	}
-	if req.App == nil || req.App.Bundle == "" {
+	if ctx.bundle == "" {
 		return false
 	}
-	for _, b := range r.AppBundles {
-		if b == req.App.Bundle {
-			return true
-		}
-	}
-	return false
+	_, ok := r.bundleSet[ctx.bundle]
+	return ok
 }
 
-func matchRuleHour(r *Rule) bool {
-	if len(r.Hours) == 0 {
+func matchRuleHour(r *Rule, hourUTC int) bool {
+	if len(r.hourSet) == 0 {
 		return true
 	}
-	h := time.Now().UTC().Hour()
-	for _, rh := range r.Hours {
-		if rh == h {
-			return true
-		}
-	}
-	return false
+	_, ok := r.hourSet[hourUTC]
+	return ok
 }
 
-func matchRuleMedia(r *Rule, req *openrtb.BidRequest) bool {
-	if len(r.MediaTypes) == 0 {
+func matchRuleMedia(r *Rule, ctx ruleMatchCtx) bool {
+	if len(r.mediaTypeSet) == 0 {
 		return true
 	}
-	hasVideo := false
-	if len(req.Imp) > 0 && req.Imp[0].Video != nil {
-		hasVideo = true
-	}
-	for _, m := range r.MediaTypes {
-		if strings.ToLower(m) == "video" && hasVideo {
+	if ctx.hasVideo {
+		if _, ok := r.mediaTypeSet["video"]; ok {
 			return true
 		}
 	}

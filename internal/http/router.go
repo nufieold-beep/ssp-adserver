@@ -73,7 +73,10 @@ type SupplyTag struct {
 	ContentGenre string `json:"content_genre,omitempty"` // comma-separated: game,entertainment,family
 	ContentLang  string `json:"content_lang,omitempty"`  // en, es, etc.
 	DeviceType   int    `json:"device_type,omitempty"`   // 3=CTV, 7=STB
-	VastURL      string `json:"vast_url,omitempty"`      // Generated VAST tag URL (read-only)
+        AppName      string `json:"app_name,omitempty"`      // Added for App/Site building
+        AppBundle    string `json:"app_bundle,omitempty"`    // Added for App/Site building
+        Domain       string `json:"domain,omitempty"`        // Added for App/Site building
+        VastURL      string `json:"vast_url,omitempty"`      // Generated VAST tag URL (read-only)
 }
 
 type DemandEndpoint struct {
@@ -147,6 +150,9 @@ type store struct {
 
 	supplyTags      map[int]*SupplyTag
 	nextSupplyTagID int
+	supplyBySlotID  map[string]*SupplyTag
+	supplyByName    map[string]*SupplyTag
+	supplyByIDStr   map[string]*SupplyTag
 
 	demandEndpoints      map[int]*DemandEndpoint
 	nextDemandEndpointID int
@@ -156,6 +162,7 @@ type store struct {
 
 	mappings      map[int]*SDMapping
 	nextMappingID int
+	mappingsBySID map[int][]*SDMapping
 
 	targetingRules map[int]*TargetingRule
 	nextRuleID     int
@@ -171,14 +178,50 @@ func newStore() *store {
 		nextAdvertiserID:     2,
 		supplyTags:           make(map[int]*SupplyTag),
 		nextSupplyTagID:      1,
+		supplyBySlotID:       make(map[string]*SupplyTag),
+		supplyByName:         make(map[string]*SupplyTag),
+		supplyByIDStr:        make(map[string]*SupplyTag),
 		demandEndpoints:      make(map[int]*DemandEndpoint),
 		nextDemandEndpointID: 1,
 		demandVastTags:       make(map[int]*DemandVastTag),
 		nextDemandVastTagID:  1,
 		mappings:             make(map[int]*SDMapping),
 		nextMappingID:        1,
+		mappingsBySID:        make(map[int][]*SDMapping),
 		targetingRules:       make(map[int]*TargetingRule),
 		nextRuleID:           1,
+	}
+}
+
+// rebuildSupplyIndexLocked rebuilds active supply-tag lookup indexes.
+// Caller must hold s.mu Lock/RLock as appropriate.
+func (s *store) rebuildSupplyIndexLocked() {
+	s.supplyBySlotID = make(map[string]*SupplyTag, len(s.supplyTags))
+	s.supplyByName = make(map[string]*SupplyTag, len(s.supplyTags))
+	s.supplyByIDStr = make(map[string]*SupplyTag, len(s.supplyTags))
+	for _, t := range s.supplyTags {
+		if t.Status != 1 {
+			continue
+		}
+		if t.SlotID != "" {
+			s.supplyBySlotID[t.SlotID] = t
+		}
+		if t.Name != "" {
+			s.supplyByName[t.Name] = t
+		}
+		s.supplyByIDStr[strconv.Itoa(t.ID)] = t
+	}
+}
+
+// rebuildMappingIndexLocked rebuilds active mapping indexes by supply id.
+// Caller must hold s.mu Lock/RLock as appropriate.
+func (s *store) rebuildMappingIndexLocked() {
+	s.mappingsBySID = make(map[int][]*SDMapping)
+	for _, m := range s.mappings {
+		if m.Status != 1 {
+			continue
+		}
+		s.mappingsBySID[m.SupplyID] = append(s.mappingsBySID[m.SupplyID], m)
 	}
 }
 
@@ -187,17 +230,14 @@ func newStore() *store {
 func (s *store) lookupSupplyByTag(tag string) *SupplyTag {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	for _, t := range s.supplyTags {
-		if t.Status != 1 {
-			continue
-		}
-		if t.SlotID == tag || t.Name == tag {
-			return t
-		}
-		// Also match by ID string
-		if strconv.Itoa(t.ID) == tag {
-			return t
-		}
+	if t, ok := s.supplyBySlotID[tag]; ok {
+		return t
+	}
+	if t, ok := s.supplyByName[tag]; ok {
+		return t
+	}
+	if t, ok := s.supplyByIDStr[tag]; ok {
+		return t
 	}
 	return nil
 }
@@ -1022,6 +1062,7 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 		}
 		t.VastURL = generateVastTagURL(&t)
 		s.supplyTags[t.ID] = &t
+		s.rebuildSupplyIndexLocked()
 		s.mu.Unlock()
 		return c.Status(201).JSON(t)
 	})
@@ -1050,6 +1091,8 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 		if update.SlotID != "" {
 			t.SlotID = update.SlotID
 		}
+		t.VastURL = generateVastTagURL(t)
+		s.rebuildSupplyIndexLocked()
 		return c.JSON(t)
 	})
 
@@ -1061,6 +1104,7 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 			return c.Status(404).JSON(fiber.Map{"error": "Not found"})
 		}
 		delete(s.supplyTags, id)
+		s.rebuildSupplyIndexLocked()
 		return c.JSON(fiber.Map{"deleted": id})
 	})
 
@@ -1346,6 +1390,7 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 			m.Status = 1
 		}
 		s.mappings[m.ID] = &m
+		s.rebuildMappingIndexLocked()
 		s.mu.Unlock()
 		return c.Status(201).JSON(m)
 	})
@@ -1371,6 +1416,7 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 		if update.Status != 0 {
 			m.Status = update.Status
 		}
+		s.rebuildMappingIndexLocked()
 		return c.JSON(m)
 	})
 
@@ -1382,6 +1428,7 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 			return c.Status(404).JSON(fiber.Map{"error": "Not found"})
 		}
 		delete(s.mappings, id)
+		s.rebuildMappingIndexLocked()
 		return c.JSON(fiber.Map{"deleted": id})
 	})
 }
@@ -1463,10 +1510,7 @@ func supplyTagVastHandler(p *pipeline.Pipeline, metrics *monitor.Metrics, s *sto
 		var mappedAdapterIDs []string
 		if sid > 0 {
 			s.mu.RLock()
-			for _, m := range s.mappings {
-				if m.SupplyID != sid || m.Status != 1 {
-					continue
-				}
+			for _, m := range s.mappingsBySID[sid] {
 				switch m.Type {
 				case "ortb":
 					mappedAdapterIDs = append(mappedAdapterIDs, fmt.Sprintf("demand-ep-%d", m.DemandID))

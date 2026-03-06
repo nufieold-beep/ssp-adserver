@@ -14,6 +14,11 @@ import (
 // e.g., "http://localhost:8080" — router sets this on init.
 var BaseURL string
 
+var alpha3To2Country = map[string]string{
+	"USA": "US", "GBR": "GB", "CAN": "CA", "AUS": "AU", "DEU": "DE",
+	"FRA": "FR", "JPN": "JP", "CHN": "CN", "IND": "IN", "BRA": "BR",
+}
+
 // AdmType classifies the content of a bid's Adm field.
 type AdmType int
 
@@ -132,11 +137,7 @@ func impressionBlock(evtBase string, bid *openrtb.Bid, req *openrtb.BidRequest) 
 
 func metricCountryCode(country string) string {
 	code := strings.ToUpper(strings.TrimSpace(country))
-	alpha3To2 := map[string]string{
-		"USA": "US", "GBR": "GB", "CAN": "CA", "AUS": "AU", "DEU": "DE",
-		"FRA": "FR", "JPN": "JP", "CHN": "CN", "IND": "IN", "BRA": "BR",
-	}
-	if v, ok := alpha3To2[code]; ok {
+	if v, ok := alpha3To2Country[code]; ok {
 		return v
 	}
 	return code

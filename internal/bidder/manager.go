@@ -1,68 +1,168 @@
 package bidder
 
 import (
-	"ssp/internal/config"
-	"ssp/internal/openrtb"
-	"sync"
+"ssp/internal/config"
+"ssp/internal/openrtb"
+"sync"
+"strings"
 )
 
+type ManagedBidder struct {
+Bidder
+Config *config.AdapterConfig
+}
+
 type Manager struct {
-	bidders []Bidder
+bidders []ManagedBidder
 }
 
 // NewManagerFromConfig creates a bidder manager from YAML config.
+// It will utilize advanced AdapterConfig to perform precision targeting filters before launching DSP threads.
 func NewManagerFromConfig(cfg *config.Config) *Manager {
-	var bidders []Bidder
-	for _, bc := range cfg.Bidders {
-		if bc.Status == 0 {
-			continue
-		}
-		switch bc.Type {
-		case "ortb":
-			bidders = append(bidders, NewORTBBidder(bc.Name, bc.Endpoint, bc.Timeout))
-		case "vast":
-			bidders = append(bidders, NewVASTBidder(bc.Name, bc.Endpoint, bc.Timeout, bc.Floor))
-		}
-	}
-	return &Manager{bidders: bidders}
+var bidders []ManagedBidder
+
+if len(cfg.Adapters) > 0 {
+for _, ac := range cfg.Adapters {
+if ac.Status == 0 {
+continue
+}
+
+acCpy := ac
+var b Bidder
+switch ac.Type {
+case "ortb":
+b = NewORTBBidder(ac.Name, ac.Endpoint, ac.TimeoutMs)
+case "vast":
+b = NewVASTBidder(ac.Name, ac.Endpoint, ac.TimeoutMs, ac.Floor)
+}
+if b != nil {
+bidders = append(bidders, ManagedBidder{
+Bidder: b,
+Config: &acCpy,
+})
+}
+}
+} else {
+// Fallback for legacy configs
+for _, bc := range cfg.Bidders {
+if bc.Status == 0 {
+continue
+}
+var b Bidder
+switch bc.Type {
+case "ortb":
+b = NewORTBBidder(bc.Name, bc.Endpoint, bc.Timeout)
+case "vast":
+b = NewVASTBidder(bc.Name, bc.Endpoint, bc.Timeout, bc.Floor)
+}
+if b != nil {
+bidders = append(bidders, ManagedBidder{
+Bidder: b,
+Config: &config.AdapterConfig{Name: bc.Name},
+})
+}
+}
+}
+
+return &Manager{bidders: bidders}
 }
 
 // NewManager creates a default manager (fallback).
 func NewManager() *Manager {
-	return &Manager{
-		bidders: []Bidder{
-			NewORTBBidder("dsp1", "https://example-dsp.com/openrtb", 120),
-			NewVASTBidder("network1", "https://ads.network.com/vast", 120, 1.0),
-		},
-	}
+return &Manager{
+bidders: []ManagedBidder{
+{
+Bidder: NewORTBBidder("dsp1", "https://example-dsp.com/openrtb", 120),
+Config: &config.AdapterConfig{Name: "dsp1"},
+},
+},
+}
+}
+
+// validateTargeting evaluates request against Adapter Config criteria. Returns false if DSP should be skipped.
+func (mb *ManagedBidder) validateTargeting(req openrtb.BidRequest) bool {
+if mb.Config == nil {
+return true // pass-through
+}
+
+// Geolocation blocking / Allowing
+if len(mb.Config.TargetGeos) > 0 && req.Device.Geo != nil && req.Device.Geo.Country != "" {
+matchGeo := false
+for _, geo := range mb.Config.TargetGeos {
+if strings.EqualFold(geo, req.Device.Geo.Country) {
+matchGeo = true
+break
+}
+}
+if !matchGeo {
+return false
+}
+}
+
+// OS Targeting
+if len(mb.Config.TargetOS) > 0 && req.Device.OS != "" {
+matchOS := false
+for _, os := range mb.Config.TargetOS {
+if strings.EqualFold(os, req.Device.OS) {
+matchOS = true
+break
+}
+}
+if !matchOS {
+return false
+}
+}
+
+// Bcat Blocking (Blocked Categories)
+if len(mb.Config.BlockedBcat) > 0 && len(req.BCat) > 0 {
+for _, blocked := range mb.Config.BlockedBcat {
+for _, reqCat := range req.BCat {
+if strings.EqualFold(blocked, reqCat) {
+return false // Request is offering a blocked category
+}
+}
+}
+}
+
+return true
 }
 
 func (m *Manager) CallAll(req openrtb.BidRequest) []openrtb.Bid {
-	var wg sync.WaitGroup
-	bidChan := make(chan openrtb.Bid, 20)
+var wg sync.WaitGroup
+bidChan := make(chan openrtb.Bid, len(m.bidders)*2) // Buffered for worst case
 
-	for _, bidder := range m.bidders {
-		wg.Add(1)
-		go func(b Bidder) {
-			defer wg.Done()
-			bids, err := b.Request(req)
-			if err != nil {
-				return
-			}
-			for _, bid := range bids {
-				bidChan <- bid
-			}
-		}(bidder)
-	}
-
-	wg.Wait()
-	close(bidChan)
-
-	var bids []openrtb.Bid
-	for b := range bidChan {
-		bids = append(bids, b)
-	}
-	return bids
+for _, bidder := range m.bidders {
+if !bidder.validateTargeting(req) {
+continue // Stop processing and avoid sending network traffic
 }
 
-func (m *Manager) Bidders() []Bidder { return m.bidders }
+wg.Add(1)
+go func(b ManagedBidder) {
+defer wg.Done()
+bids, err := b.Request(req)
+if err != nil {
+return
+}
+for _, bid := range bids {
+bidChan <- bid
+}
+}(bidder)
+}
+
+wg.Wait()
+close(bidChan)
+
+var bids []openrtb.Bid
+for b := range bidChan {
+bids = append(bids, b)
+}
+return bids
+}
+
+func (m *Manager) Bidders() []Bidder {
+var interfaceBidders []Bidder
+for _, b := range m.bidders {
+interfaceBidders = append(interfaceBidders, b.Bidder)
+}
+return interfaceBidders
+}

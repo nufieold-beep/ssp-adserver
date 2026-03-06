@@ -37,9 +37,9 @@ func NewLegacyAdapter(b LegacyBidder) *LegacyAdapter {
 	}
 }
 
-func (a *LegacyAdapter) ID() string        { return a.id }
-func (a *LegacyAdapter) Name() string       { return a.bidder.Name() }
-func (a *LegacyAdapter) Type() AdapterType  { return a.atype }
+func (a *LegacyAdapter) ID() string                          { return a.id }
+func (a *LegacyAdapter) Name() string                        { return a.bidder.Name() }
+func (a *LegacyAdapter) Type() AdapterType                   { return a.atype }
 func (a *LegacyAdapter) Supports(_ *openrtb.BidRequest) bool { return true }
 
 func (a *LegacyAdapter) RequestBids(ctx context.Context, req *openrtb.BidRequest) (*BidResult, error) {
