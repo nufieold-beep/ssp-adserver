@@ -351,12 +351,7 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 			W:          w,
 			H:          h,
 			Language:   language,
-			SUA: &SUA{
-				Browsers: []SUABrandVersion{{Brand: "AmazonFireStick", Version: []string{""}}},
-				Platform: &SUABrandVersion{Brand: "Android"},
-				Mobile:   0,
-				Source:   3,
-			},
+			SUA:        detectSUA(ua, deviceType, deviceMake, deviceOS),
 		},
 		Regs: &Regs{
 			COPPA:  0,
@@ -429,6 +424,140 @@ func queryIntFallback(c *fiber.Ctx, primary, fallback string, def int) int {
 		}
 	}
 	return def
+}
+
+// detectSUA builds device.sua from user-agent and device hints.
+func detectSUA(ua string, deviceType int, make, os string) *SUA {
+	uaL := strings.ToLower(ua)
+	browserBrand, browserVer := detectBrowserBrandVersion(ua, uaL)
+	platformBrand := detectPlatformBrand(uaL, make, os)
+	mobile := detectMobileFlag(uaL, deviceType)
+
+	return &SUA{
+		Browsers: []SUABrandVersion{{Brand: browserBrand, Version: []string{browserVer}}},
+		Platform: &SUABrandVersion{Brand: platformBrand},
+		Mobile:   mobile,
+		Source:   3,
+	}
+}
+
+func detectMobileFlag(uaL string, deviceType int) int {
+	switch deviceType {
+	case 1, 4, 5:
+		return 1
+	case 3, 7:
+		return 0
+	}
+	if strings.Contains(uaL, "mobile") && !strings.Contains(uaL, "tablet") && !strings.Contains(uaL, "tv") {
+		return 1
+	}
+	return 0
+}
+
+func detectPlatformBrand(uaL, make, os string) string {
+	switch {
+	case strings.Contains(uaL, "aft") || strings.Contains(uaL, "fire tv") || strings.Contains(uaL, "amazon"):
+		return "Android"
+	case strings.Contains(uaL, "tizen"):
+		return "Tizen"
+	case strings.Contains(uaL, "webos"):
+		return "webOS"
+	case strings.Contains(uaL, "roku"):
+		return "Roku"
+	case strings.Contains(uaL, "android"):
+		return "Android"
+	case strings.Contains(uaL, "iphone") || strings.Contains(uaL, "ipad") || strings.Contains(uaL, "ios"):
+		return "iOS"
+	case strings.Contains(uaL, "windows"):
+		return "Windows"
+	case strings.Contains(uaL, "mac os x") || strings.Contains(uaL, "macintosh"):
+		return "macOS"
+	case strings.Contains(uaL, "linux"):
+		return "Linux"
+	}
+
+	if os = strings.TrimSpace(os); os != "" {
+		return os
+	}
+	if make = strings.TrimSpace(make); make != "" {
+		return make
+	}
+	return "Android"
+}
+
+func detectBrowserBrandVersion(ua, uaL string) (string, string) {
+	switch {
+	case strings.Contains(uaL, "aft") || strings.Contains(uaL, "fire tv") || strings.Contains(uaL, "amazon"):
+		if v := uaTokenVersion(ua, "Silk/"); v != "" {
+			return "AmazonFireStick", v
+		}
+		return "AmazonFireStick", ""
+	case strings.Contains(uaL, "roku"):
+		if v := uaTokenVersion(ua, "Roku/"); v != "" {
+			return "Roku", v
+		}
+		return "Roku", ""
+	case strings.Contains(uaL, "tizen") || (strings.Contains(uaL, "samsung") && strings.Contains(uaL, "tv")):
+		if v := uaTokenVersion(ua, "Tizen "); v != "" {
+			return "SamsungTV", v
+		}
+		return "SamsungTV", ""
+	case strings.Contains(uaL, "webos") || (strings.Contains(uaL, "lg") && strings.Contains(uaL, "tv")):
+		if v := uaTokenVersion(ua, "Web0S/"); v != "" {
+			return "LGTV", v
+		}
+		if v := uaTokenVersion(ua, "webOS/"); v != "" {
+			return "LGTV", v
+		}
+		return "LGTV", ""
+	}
+
+	tokens := []struct {
+		Token string
+		Brand string
+	}{
+		{Token: "Edg/", Brand: "Edge"},
+		{Token: "OPR/", Brand: "Opera"},
+		{Token: "CriOS/", Brand: "Chrome"},
+		{Token: "Chrome/", Brand: "Chrome"},
+		{Token: "FxiOS/", Brand: "Firefox"},
+		{Token: "Firefox/", Brand: "Firefox"},
+		{Token: "Version/", Brand: "Safari"},
+	}
+
+	for _, t := range tokens {
+		if v := uaTokenVersion(ua, t.Token); v != "" {
+			if t.Brand == "Safari" && !strings.Contains(uaL, "safari") {
+				continue
+			}
+			return t.Brand, v
+		}
+	}
+
+	return "Unknown", ""
+}
+
+func uaTokenVersion(ua, token string) string {
+	idx := strings.Index(ua, token)
+	if idx == -1 {
+		return ""
+	}
+	rest := ua[idx+len(token):]
+	if rest == "" {
+		return ""
+	}
+	end := len(rest)
+	for i, ch := range rest {
+		if (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' {
+			continue
+		}
+		end = i
+		break
+	}
+	if end <= 0 {
+		return ""
+	}
+	return strings.Trim(rest[:end], "._")
 }
 
 // detectIFAType returns the IFA type based on device OS, make, and user-agent.
