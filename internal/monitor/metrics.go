@@ -63,19 +63,19 @@ type CampaignMetric struct {
 
 // TrafficEvent records bidstream activity for the inspector.
 type TrafficEvent struct {
-	Time      time.Time `json:"time"`
-	Type      string    `json:"type"`
-	RequestID string    `json:"request_id"`
-	Env       string    `json:"environment"`
-	Details   string    `json:"details"`
-	DemandID  string    `json:"demand_id,omitempty"`
-	CreativeID string   `json:"creative_id,omitempty"`
-	Country   string    `json:"country,omitempty"`
-	IP        string    `json:"ip,omitempty"`
-	Source    string    `json:"source,omitempty"`
-	Bundle    string    `json:"bundle,omitempty"`
-	ADomain   string    `json:"adomain,omitempty"`
-	Price     string    `json:"price,omitempty"`
+	Time       time.Time `json:"time"`
+	Type       string    `json:"type"`
+	RequestID  string    `json:"request_id"`
+	Env        string    `json:"environment"`
+	Details    string    `json:"details"`
+	CampaignID string    `json:"campaign_id,omitempty"`
+	CreativeID string    `json:"creative_id,omitempty"`
+	Country    string    `json:"country,omitempty"`
+	IP         string    `json:"ip,omitempty"`
+	Bundle     string    `json:"bundle,omitempty"`
+	Adomain    string    `json:"adomain,omitempty"`
+	Price      float64   `json:"price,omitempty"`
+	Source     string    `json:"source,omitempty"`
 }
 
 func New() *Metrics {

@@ -338,7 +338,7 @@ textarea{resize:vertical;min-height:68px}
     <div class="card-header"><h3>Live Event Stream</h3><span style="font-size:11px;color:var(--fg3)">Ring buffer (200 events)</span></div>
     <div class="card-body table-wrap">
       <table>
-        <thead><tr><th>Time</th><th>Type</th><th>Request ID</th><th>Env</th><th>Country</th><th>Bundle</th><th>Demand</th><th>Details</th></tr></thead>
+        <thead><tr><th>Time</th><th>Type</th><th>Request ID</th><th>Env</th><th>Country</th><th>Bundle</th><th>Price</th><th>Details</th></tr></thead>
         <tbody id="tiBody"><tr><td colspan="8" class="empty">Loading...</td></tr></tbody>
       </table>
     </div>
@@ -1019,7 +1019,7 @@ async function loadInspector() {
       <td>${esc(e.environment||'—')}</td>
       <td>${esc(e.country||'—')}</td>
       <td style="font-size:11px">${esc(e.bundle||'—')}</td>
-      <td style="font-size:11px">${esc(e.demand_id||'—')}</td>
+      <td>${e.price?'$'+e.price.toFixed(2):'—'}</td>
       <td style="font-size:12px">${esc(e.details||'')}</td>
     </tr>`).join(''):'<tr><td colspan="8" class="empty">No events</td></tr>';
 

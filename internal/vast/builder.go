@@ -13,16 +13,6 @@ import (
 // e.g., "http://localhost:8080" — router sets this on init.
 var BaseURL string
 
-// ImpressionCtx carries request-level context for impression tracking URLs.
-type ImpressionCtx struct {
-	DemandID string // demand source / campaign ID
-	Country  string // ISO country code
-	IP       string
-	Env      string // ctv, mobile, web
-	Source   string // supply source domain
-	Bundle   string // app bundle
-}
-
 // AdmType classifies the content of a bid's Adm field.
 type AdmType int
 
@@ -56,44 +46,58 @@ func DetectAdmType(adm string) AdmType {
 
 // Build creates a VAST 3.0 XML response from a winning bid.
 // baseURL is the publicly-reachable origin (e.g. "https://ads1.viadsmedia.com").
+// req supplies context (bundle, IP, country, env) for enriched tracking URLs.
 // Auto-detects the Adm content type and generates InLine, Wrapper,
 // or passthrough VAST accordingly, always injecting SSP tracking pixels.
-func Build(bid *openrtb.Bid, requestID, baseURL string, ictx *ImpressionCtx) string {
+func Build(bid *openrtb.Bid, requestID, baseURL string, req ...*openrtb.BidRequest) string {
 	if baseURL == "" {
 		baseURL = BaseURL
 	}
-	if ictx == nil {
-		ictx = &ImpressionCtx{}
+	var r *openrtb.BidRequest
+	if len(req) > 0 {
+		r = req[0]
 	}
 	switch DetectAdmType(bid.Adm) {
 	case AdmPassthrough:
-		return buildPassthrough(bid, requestID, baseURL, ictx)
+		return buildPassthrough(bid, requestID, baseURL, r)
 	case AdmWrapper:
-		return buildWrapper(bid, requestID, baseURL, ictx)
+		return buildWrapper(bid, requestID, baseURL, r)
 	default:
-		return buildInline(bid, requestID, baseURL, ictx)
+		return buildInline(bid, requestID, baseURL, r)
 	}
 }
 
 // impressionBlock returns the SSP + DSP impression pixel XML fragment.
-func impressionBlock(evtBase, requestID string, bid *openrtb.Bid, ictx *ImpressionCtx) string {
-	adom := ""
-	if len(bid.ADomain) > 0 {
-		adom = bid.ADomain[0]
-	}
+func impressionBlock(evtBase, requestID string, bid *openrtb.Bid, req *openrtb.BidRequest) string {
+	var sb strings.Builder
+
+	// Build enriched impression URL with full tracking params
 	params := url.Values{}
 	params.Set("rid", requestID)
-	params.Set("cmp", ictx.DemandID)
 	params.Set("crid", bid.CrID)
-	params.Set("ctry", ictx.Country)
-	params.Set("ip", ictx.IP)
-	params.Set("env", ictx.Env)
-	params.Set("sr", ictx.Source)
-	params.Set("bndl", ictx.Bundle)
-	params.Set("adom", adom)
 	params.Set("price", fmt.Sprintf("%.6f", bid.Price))
+	if len(bid.ADomain) > 0 {
+		params.Set("adom", bid.ADomain[0])
+	}
+	params.Set("cmp", bid.Seat)
+	if req != nil {
+		params.Set("ip", req.Device.IP)
+		if req.App != nil {
+			params.Set("bndl", req.App.Bundle)
+		}
+		if req.Device.Geo != nil && req.Device.Geo.Country != "" {
+			params.Set("ctry", req.Device.Geo.Country)
+		}
+		env := "ctv"
+		if req.Device.DeviceType == 1 {
+			env = "mobile"
+		} else if req.Device.DeviceType == 2 {
+			env = "desktop"
+		}
+		params.Set("env", env)
+	}
+	params.Set("sr", "viadsmedia.com")
 
-	var sb strings.Builder
 	fmt.Fprintf(&sb, "   <Impression><![CDATA[%s/impression?%s]]></Impression>\n",
 		evtBase, params.Encode())
 	if bid.BURL != "" {
@@ -104,9 +108,9 @@ func impressionBlock(evtBase, requestID string, bid *openrtb.Bid, ictx *Impressi
 }
 
 // buildInline creates a self-contained VAST InLine ad from a media file URL.
-func buildInline(bid *openrtb.Bid, requestID, baseURL string, ictx *ImpressionCtx) string {
+func buildInline(bid *openrtb.Bid, requestID, baseURL string, req *openrtb.BidRequest) string {
 	evtBase := fmt.Sprintf("%s/api/v1/event", baseURL)
-	impressions := impressionBlock(evtBase, requestID, bid, ictx)
+	impressions := impressionBlock(evtBase, requestID, bid, req)
 
 	w, h := bid.W, bid.H
 	if w == 0 {
@@ -143,9 +147,9 @@ func buildInline(bid *openrtb.Bid, requestID, baseURL string, ictx *ImpressionCt
 // buildWrapper creates a VAST Wrapper that redirects to the DSP's VAST tag URL.
 // SSP tracking and impression pixels are injected so they fire alongside the
 // downstream ad's own events.
-func buildWrapper(bid *openrtb.Bid, requestID, baseURL string, ictx *ImpressionCtx) string {
+func buildWrapper(bid *openrtb.Bid, requestID, baseURL string, req *openrtb.BidRequest) string {
 	evtBase := fmt.Sprintf("%s/api/v1/event", baseURL)
-	impressions := impressionBlock(evtBase, requestID, bid, ictx)
+	impressions := impressionBlock(evtBase, requestID, bid, req)
 	bidID := html.EscapeString(bid.ID)
 
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
@@ -162,10 +166,10 @@ func buildWrapper(bid *openrtb.Bid, requestID, baseURL string, ictx *ImpressionC
 
 // buildPassthrough takes a complete VAST XML document from the DSP and
 // injects SSP impression + tracking pixels into it.
-func buildPassthrough(bid *openrtb.Bid, requestID, baseURL string, ictx *ImpressionCtx) string {
+func buildPassthrough(bid *openrtb.Bid, requestID, baseURL string, req *openrtb.BidRequest) string {
 	xml := html.UnescapeString(strings.TrimSpace(bid.Adm))
 	evtBase := fmt.Sprintf("%s/api/v1/event", baseURL)
-	impressions := impressionBlock(evtBase, requestID, bid, ictx)
+	impressions := impressionBlock(evtBase, requestID, bid, req)
 
 	// Inject impression pixels after the first <Impression> block or after <InLine>/<Wrapper>
 	injected := false

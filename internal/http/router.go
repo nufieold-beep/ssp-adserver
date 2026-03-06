@@ -278,42 +278,6 @@ func (s *store) recordAdDecision(req *openrtb.BidRequest, winner *openrtb.Bid, w
 	}
 }
 
-// buildImpressionCtx extracts request-level context for impression tracking URLs.
-func buildImpressionCtx(req *openrtb.BidRequest, demandID string) *vast.ImpressionCtx {
-	country := ""
-	if req.Device.Geo != nil {
-		country = req.Device.Geo.Country
-	}
-	bundle := ""
-	source := "viadsmedia.com"
-	if req.App != nil {
-		bundle = req.App.Bundle
-	}
-	env := "ctv"
-	switch req.Device.DeviceType {
-	case 1:
-		env = "mobile"
-	case 2:
-		env = "desktop"
-	case 3:
-		env = "ctv"
-	case 4:
-		env = "mobile"
-	case 5:
-		env = "tablet"
-	case 7:
-		env = "stb"
-	}
-	return &vast.ImpressionCtx{
-		DemandID: demandID,
-		Country:  country,
-		IP:       req.Device.IP,
-		Env:      env,
-		Source:   source,
-		Bundle:   bundle,
-	}
-}
-
 // ── Router ──
 
 // EnterpriseDeps holds optional enterprise-grade pipeline dependencies.
@@ -493,8 +457,7 @@ func vastHandler(mgr *bidder.Manager, metrics *monitor.Metrics, s *store, auctio
 		}
 
 		// Build VAST XML with real tracking URLs and burl as impression pixel
-		ictx := buildImpressionCtx(&req, "")
-		xml := vast.Build(winner, req.ID, c.BaseURL(), ictx)
+		xml := vast.Build(winner, req.ID, c.BaseURL(), &req)
 		if xml == "" {
 			metrics.RecordError()
 			return c.Status(500).JSON(fiber.Map{"error": "Failed to build VAST"})
@@ -560,25 +523,32 @@ func registerEventRoutes(app *fiber.App, metrics *monitor.Metrics) {
 			var details string
 			switch handler.detail {
 			case "bid=%s price=%s":
-				details = fmt.Sprintf("bid=%s price=%s", c.Query("bid"), c.Query("price"))
+				details = fmt.Sprintf("crid=%s price=%s adom=%s bndl=%s ctry=%s",
+					c.Query("crid"), c.Query("price"), c.Query("adom"), c.Query("bndl"), c.Query("ctry"))
 			case "code=%s":
 				details = fmt.Sprintf("code=%s", c.Query("code"))
 			default:
 				details = fmt.Sprintf("bid=%s", c.Query("bid"))
 			}
+
+			price := 0.0
+			if p := c.Query("price"); p != "" {
+				price, _ = strconv.ParseFloat(p, 64)
+			}
+
 			metrics.AddTrafficEvent(monitor.TrafficEvent{
 				Type:       handler.eventType,
 				RequestID:  c.Query("rid"),
-				Env:        c.Query("env", "CTV"),
+				Env:        c.Query("env", "ctv"),
 				Details:    details,
-				DemandID:   c.Query("cmp"),
+				CampaignID: c.Query("cmp"),
 				CreativeID: c.Query("crid"),
 				Country:    c.Query("ctry"),
 				IP:         c.Query("ip"),
-				Source:     c.Query("sr"),
 				Bundle:     c.Query("bndl"),
-				ADomain:    c.Query("adom"),
-				Price:      c.Query("price"),
+				Adomain:    c.Query("adom"),
+				Price:      price,
+				Source:     c.Query("sr"),
 			})
 			return c.SendStatus(204)
 		})
@@ -1508,12 +1478,11 @@ func supplyTagVastHandler(p *pipeline.Pipeline, metrics *monitor.Metrics, s *sto
 
 		// If mappings exist, only those demand sources are called.
 		// If no mappings, fan out to all active adapters (backward compat).
-		ictx := buildImpressionCtx(&req, "")
 		var result *pipeline.Result
 		if len(mappedAdapterIDs) > 0 {
-			result = p.Execute(c.Context(), &req, c.BaseURL(), ictx, mappedAdapterIDs)
+			result = p.Execute(c.Context(), &req, c.BaseURL(), mappedAdapterIDs)
 		} else {
-			result = p.Execute(c.Context(), &req, c.BaseURL(), ictx)
+			result = p.Execute(c.Context(), &req, c.BaseURL())
 		}
 
 		if result.Error != nil {
@@ -1557,7 +1526,7 @@ func pipelineHandler(p *pipeline.Pipeline, metrics *monitor.Metrics, s *store) f
 			return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 		}
 
-		result := p.Execute(c.Context(), &req, c.BaseURL(), buildImpressionCtx(&req, ""))
+		result := p.Execute(c.Context(), &req, c.BaseURL())
 
 		if result.Error != nil {
 			metrics.RecordError()

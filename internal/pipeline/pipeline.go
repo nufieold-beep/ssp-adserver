@@ -44,16 +44,15 @@ type Result struct {
 	NoBid        bool
 	Error        error
 	BaseURL      string // populated by caller for tracking URLs
-	ImpCtx       *vast.ImpressionCtx
 }
 
 // Execute runs the full ad serving pipeline for a single request.
 // baseURL is the publicly-reachable server origin for VAST tracking URLs.
 // adapterIDs optionally restricts which demand adapters receive bid requests.
 // Pass nil to fan out to all active adapters (no mapping filter).
-func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL string, impCtx *vast.ImpressionCtx, adapterIDs ...[]string) *Result {
+func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL string, adapterIDs ...[]string) *Result {
 	start := time.Now()
-	result := &Result{RequestID: req.ID, BaseURL: baseURL, ImpCtx: impCtx}
+	result := &Result{RequestID: req.ID, BaseURL: baseURL}
 
 	// ── Stage 1: Record request ──
 	p.Metrics.RecordAdRequest()
@@ -176,7 +175,7 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 	}
 
 	// ── Stage 8: Build VAST response ──
-	xml := vast.Build(winner, req.ID, result.BaseURL, result.ImpCtx)
+	xml := vast.Build(winner, req.ID, result.BaseURL, req)
 	if xml == "" {
 		p.Metrics.RecordError()
 		result.Error = fmt.Errorf("VAST build failed for bid %s", winner.ID)
