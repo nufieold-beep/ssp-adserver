@@ -3,7 +3,12 @@ package http
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -175,7 +180,22 @@ type store struct {
 
 	dashboardUser string
 	dashboardPass string
+	statePath     string
 }
+
+type supplyDemandState struct {
+	Version              int              `json:"version"`
+	NextSupplyTagID      int              `json:"next_supply_tag_id"`
+	NextDemandEndpointID int              `json:"next_demand_endpoint_id"`
+	NextDemandVastTagID  int              `json:"next_demand_vast_tag_id"`
+	NextMappingID        int              `json:"next_mapping_id"`
+	SupplyTags           []SupplyTag      `json:"supply_tags"`
+	DemandEndpoints      []DemandEndpoint `json:"demand_endpoints"`
+	DemandVastTags       []DemandVastTag  `json:"demand_vast_tags"`
+	Mappings             []SDMapping      `json:"mappings"`
+}
+
+const runtimeStateFileName = "runtime_state.json"
 
 func newStore() *store {
 	return &store{
@@ -199,6 +219,239 @@ func newStore() *store {
 		nextRuleID:           1,
 		dashboardUser:        "admin",
 		dashboardPass:        "admin",
+	}
+}
+
+func resolveSupplyDemandStatePath(configPath string) string {
+	if v := strings.TrimSpace(os.Getenv("SSP_STATE_PATH")); v != "" {
+		return v
+	}
+	if configPath != "" && filepath.IsAbs(configPath) {
+		return filepath.Join(filepath.Dir(configPath), runtimeStateFileName)
+	}
+	return filepath.Join("data", runtimeStateFileName)
+}
+
+func maxInt(values ...int) int {
+	m := 0
+	for _, v := range values {
+		if v > m {
+			m = v
+		}
+	}
+	return m
+}
+
+func (s *store) loadSupplyDemandState(statePath string) error {
+	s.statePath = strings.TrimSpace(statePath)
+	if s.statePath == "" {
+		return nil
+	}
+
+	raw, err := os.ReadFile(s.statePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+
+	var snapshot supplyDemandState
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.supplyTags = make(map[int]*SupplyTag, len(snapshot.SupplyTags))
+	maxSupplyID := 0
+	for i := range snapshot.SupplyTags {
+		tag := snapshot.SupplyTags[i]
+		if tag.ID <= 0 {
+			continue
+		}
+		t := tag
+		s.supplyTags[t.ID] = &t
+		if t.ID > maxSupplyID {
+			maxSupplyID = t.ID
+		}
+	}
+
+	s.demandEndpoints = make(map[int]*DemandEndpoint, len(snapshot.DemandEndpoints))
+	maxDemandEndpointID := 0
+	for i := range snapshot.DemandEndpoints {
+		ep := snapshot.DemandEndpoints[i]
+		if ep.ID <= 0 {
+			continue
+		}
+		e := ep
+		s.demandEndpoints[e.ID] = &e
+		if e.ID > maxDemandEndpointID {
+			maxDemandEndpointID = e.ID
+		}
+	}
+
+	s.demandVastTags = make(map[int]*DemandVastTag, len(snapshot.DemandVastTags))
+	maxDemandVastTagID := 0
+	for i := range snapshot.DemandVastTags {
+		vt := snapshot.DemandVastTags[i]
+		if vt.ID <= 0 {
+			continue
+		}
+		t := vt
+		s.demandVastTags[t.ID] = &t
+		if t.ID > maxDemandVastTagID {
+			maxDemandVastTagID = t.ID
+		}
+	}
+
+	s.mappings = make(map[int]*SDMapping, len(snapshot.Mappings))
+	maxMappingID := 0
+	for i := range snapshot.Mappings {
+		mm := snapshot.Mappings[i]
+		if mm.ID <= 0 {
+			continue
+		}
+		m := mm
+		s.mappings[m.ID] = &m
+		if m.ID > maxMappingID {
+			maxMappingID = m.ID
+		}
+	}
+
+	s.nextSupplyTagID = maxInt(1, snapshot.NextSupplyTagID, maxSupplyID+1)
+	s.nextDemandEndpointID = maxInt(1, snapshot.NextDemandEndpointID, maxDemandEndpointID+1)
+	s.nextDemandVastTagID = maxInt(1, snapshot.NextDemandVastTagID, maxDemandVastTagID+1)
+	s.nextMappingID = maxInt(1, snapshot.NextMappingID, maxMappingID+1)
+
+	s.rebuildSupplyIndexLocked()
+	s.rebuildMappingIndexLocked()
+	return nil
+}
+
+// writeSupplyDemandStateLocked persists supply-demand runtime entities.
+// Caller must hold s.mu lock.
+func (s *store) writeSupplyDemandStateLocked() error {
+	if s.statePath == "" {
+		return nil
+	}
+
+	snapshot := supplyDemandState{Version: 1}
+
+	s.snapshotSupplyDemandStateLocked(&snapshot)
+
+	stateDir := filepath.Dir(s.statePath)
+	if err := os.MkdirAll(stateDir, 0750); err != nil {
+		return err
+	}
+
+	encoded, err := json.MarshalIndent(snapshot, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	tmpPath := s.statePath + ".tmp"
+	if err := os.WriteFile(tmpPath, encoded, 0600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, s.statePath); err != nil {
+		_ = os.Remove(s.statePath)
+		if err2 := os.Rename(tmpPath, s.statePath); err2 != nil {
+			return err2
+		}
+	}
+	return nil
+}
+
+func (s *store) snapshotSupplyDemandStateLocked(dst *supplyDemandState) {
+	dst.NextSupplyTagID = s.nextSupplyTagID
+	dst.NextDemandEndpointID = s.nextDemandEndpointID
+	dst.NextDemandVastTagID = s.nextDemandVastTagID
+	dst.NextMappingID = s.nextMappingID
+
+	dst.SupplyTags = make([]SupplyTag, 0, len(s.supplyTags))
+	for _, tag := range s.supplyTags {
+		dst.SupplyTags = append(dst.SupplyTags, *tag)
+	}
+	sort.Slice(dst.SupplyTags, func(i, j int) bool { return dst.SupplyTags[i].ID < dst.SupplyTags[j].ID })
+
+	dst.DemandEndpoints = make([]DemandEndpoint, 0, len(s.demandEndpoints))
+	for _, endpoint := range s.demandEndpoints {
+		dst.DemandEndpoints = append(dst.DemandEndpoints, *endpoint)
+	}
+	sort.Slice(dst.DemandEndpoints, func(i, j int) bool { return dst.DemandEndpoints[i].ID < dst.DemandEndpoints[j].ID })
+
+	dst.DemandVastTags = make([]DemandVastTag, 0, len(s.demandVastTags))
+	for _, vastTag := range s.demandVastTags {
+		dst.DemandVastTags = append(dst.DemandVastTags, *vastTag)
+	}
+	sort.Slice(dst.DemandVastTags, func(i, j int) bool { return dst.DemandVastTags[i].ID < dst.DemandVastTags[j].ID })
+
+	dst.Mappings = make([]SDMapping, 0, len(s.mappings))
+	for _, mapping := range s.mappings {
+		dst.Mappings = append(dst.Mappings, *mapping)
+	}
+	sort.Slice(dst.Mappings, func(i, j int) bool { return dst.Mappings[i].ID < dst.Mappings[j].ID })
+}
+
+func (s *store) registerPersistedDemandAdapters(reg *adapter.Registry) {
+	if reg == nil {
+		return
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, endpoint := range s.demandEndpoints {
+		if endpoint.Status != 1 || endpoint.URL == "" {
+			continue
+		}
+		if err := httputil.ValidateDemandURL(endpoint.URL); err != nil {
+			log.Printf("Skipping persisted demand endpoint %d (%s): %v", endpoint.ID, endpoint.Name, err)
+			continue
+		}
+
+		adapterID := fmt.Sprintf("demand-ep-%d", endpoint.ID)
+		acfg := &adapter.AdapterConfig{
+			ID: adapterID, Name: endpoint.Name,
+			Type:     adapter.AdapterType(endpoint.Integration),
+			Endpoint: endpoint.URL, TimeoutMs: normalizeDemandTimeoutMs(endpoint.Timeout),
+			Floor: endpoint.Floor, Margin: endpoint.Margin,
+			QPSLimit: endpoint.QPS, Status: endpoint.Status,
+			GZIPSupport:   endpoint.GZIPSupport,
+			RemovePChain:  endpoint.RemovePChain,
+			SChainEnabled: endpoint.SupplyChain,
+			BAdv:          endpoint.BAdv,
+			BCat:          endpoint.BCat,
+		}
+
+		switch adapter.AdapterType(endpoint.Integration) {
+		case adapter.TypeVAST:
+			reg.Register(adapter.NewVASTAdapter(acfg), acfg)
+		default:
+			reg.Register(adapter.NewORTBAdapter(acfg), acfg)
+		}
+	}
+
+	for _, demandVastTag := range s.demandVastTags {
+		if demandVastTag.Status != 1 || demandVastTag.URL == "" {
+			continue
+		}
+		if err := httputil.ValidateDemandURL(demandVastTag.URL); err != nil {
+			log.Printf("Skipping persisted demand VAST tag %d (%s): %v", demandVastTag.ID, demandVastTag.Name, err)
+			continue
+		}
+
+		adapterID := fmt.Sprintf("demand-vast-%d", demandVastTag.ID)
+		acfg := &adapter.AdapterConfig{
+			ID: adapterID, Name: demandVastTag.Name,
+			Type:     adapter.TypeVAST,
+			Endpoint: demandVastTag.URL, TimeoutMs: normalizeDemandTimeoutMs(0),
+			Floor: demandVastTag.Floor, Margin: demandVastTag.Margin,
+			Status: demandVastTag.Status,
+		}
+		reg.Register(adapter.NewVASTAdapter(acfg), acfg)
 	}
 }
 
@@ -413,6 +666,13 @@ type EnterpriseDeps struct {
 func NewRouterWithDeps(cfg *config.Config, metrics *monitor.Metrics, configPath string, eDeps *EnterpriseDeps) *fiber.App {
 	app := fiber.New(fiber.Config{BodyLimit: 4 * 1024 * 1024})
 	s := newStore()
+	statePath := resolveSupplyDemandStatePath(configPath)
+	if err := s.loadSupplyDemandState(statePath); err != nil {
+		log.Printf("Warning: failed to load runtime state (%s): %v", statePath, err)
+	}
+	if eDeps != nil {
+		s.registerPersistedDemandAdapters(eDeps.Registry)
+	}
 
 	// Professional SSP middleware stack
 	app.Use(CORS())
@@ -1118,6 +1378,10 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 		t.VastURL = generateVastTagURL(&t)
 		s.supplyTags[t.ID] = &t
 		s.rebuildSupplyIndexLocked()
+		if err := s.writeSupplyDemandStateLocked(); err != nil {
+			s.mu.Unlock()
+			return c.Status(500).JSON(fiber.Map{"error": "Failed to persist runtime state"})
+		}
 		s.mu.Unlock()
 		return c.Status(201).JSON(t)
 	})
@@ -1197,6 +1461,9 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 		t.Sensitive = update.Sensitive
 		t.VastURL = generateVastTagURL(t)
 		s.rebuildSupplyIndexLocked()
+		if err := s.writeSupplyDemandStateLocked(); err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "Failed to persist runtime state"})
+		}
 		return c.JSON(t)
 	})
 
@@ -1209,6 +1476,9 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 		}
 		delete(s.supplyTags, id)
 		s.rebuildSupplyIndexLocked()
+		if err := s.writeSupplyDemandStateLocked(); err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "Failed to persist runtime state"})
+		}
 		return c.JSON(fiber.Map{"deleted": id})
 	})
 
@@ -1294,6 +1564,10 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 			e.Status = 1
 		}
 		s.demandEndpoints[e.ID] = &e
+		if err := s.writeSupplyDemandStateLocked(); err != nil {
+			s.mu.Unlock()
+			return c.Status(500).JSON(fiber.Map{"error": "Failed to persist runtime state"})
+		}
 		s.mu.Unlock()
 
 		// Live-register as enterprise adapter for real-time parallel bidding
@@ -1373,6 +1647,9 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 		e.BAdv = update.BAdv
 		e.BCat = update.BCat
 		e.SupplyChain = update.SupplyChain
+		if err := s.writeSupplyDemandStateLocked(); err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "Failed to persist runtime state"})
+		}
 
 		// Re-register adapter with updated config for live hot-reload
 		if eDeps != nil && eDeps.Registry != nil && e.URL != "" {
@@ -1413,6 +1690,9 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 			return c.Status(404).JSON(fiber.Map{"error": "Not found"})
 		}
 		delete(s.demandEndpoints, id)
+		if err := s.writeSupplyDemandStateLocked(); err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "Failed to persist runtime state"})
+		}
 		// Remove from live adapter registry
 		if eDeps != nil && eDeps.Registry != nil {
 			eDeps.Registry.Remove(fmt.Sprintf("demand-ep-%d", id))
@@ -1459,6 +1739,10 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 			t.Status = 1
 		}
 		s.demandVastTags[t.ID] = &t
+		if err := s.writeSupplyDemandStateLocked(); err != nil {
+			s.mu.Unlock()
+			return c.Status(500).JSON(fiber.Map{"error": "Failed to persist runtime state"})
+		}
 		s.mu.Unlock()
 
 		// Live-register VAST tag as enterprise adapter for real-time parallel bidding
@@ -1510,6 +1794,9 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 		if update.CPM != 0 {
 			t.CPM = update.CPM
 		}
+		if err := s.writeSupplyDemandStateLocked(); err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "Failed to persist runtime state"})
+		}
 
 		// Re-register adapter with updated config for live hot-reload
 		if eDeps != nil && eDeps.Registry != nil && t.URL != "" {
@@ -1539,6 +1826,9 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 			return c.Status(404).JSON(fiber.Map{"error": "Not found"})
 		}
 		delete(s.demandVastTags, id)
+		if err := s.writeSupplyDemandStateLocked(); err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "Failed to persist runtime state"})
+		}
 		// Remove from live adapter registry
 		if eDeps != nil && eDeps.Registry != nil {
 			eDeps.Registry.Remove(fmt.Sprintf("demand-vast-%d", id))
@@ -1570,6 +1860,10 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 		}
 		s.mappings[m.ID] = &m
 		s.rebuildMappingIndexLocked()
+		if err := s.writeSupplyDemandStateLocked(); err != nil {
+			s.mu.Unlock()
+			return c.Status(500).JSON(fiber.Map{"error": "Failed to persist runtime state"})
+		}
 		s.mu.Unlock()
 		return c.Status(201).JSON(m)
 	})
@@ -1596,6 +1890,9 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 			m.Status = update.Status
 		}
 		s.rebuildMappingIndexLocked()
+		if err := s.writeSupplyDemandStateLocked(); err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "Failed to persist runtime state"})
+		}
 		return c.JSON(m)
 	})
 
@@ -1608,6 +1905,9 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 		}
 		delete(s.mappings, id)
 		s.rebuildMappingIndexLocked()
+		if err := s.writeSupplyDemandStateLocked(); err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "Failed to persist runtime state"})
+		}
 		return c.JSON(fiber.Map{"deleted": id})
 	})
 }
