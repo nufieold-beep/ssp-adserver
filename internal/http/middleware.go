@@ -8,10 +8,12 @@ import (
 	"github.com/google/uuid"
 )
 
+const dashboardSessionCookieName = "ssp_dashboard_session"
+
 // AdminAPIKey returns middleware that requires a valid API key for admin routes.
 // The key is read from the SSP_API_KEY environment variable.
 // If SSP_API_KEY is not set, requests pass through (dashboard login provides auth).
-func AdminAPIKey() fiber.Handler {
+func AdminAPIKey(s *store) fiber.Handler {
 	key := strings.TrimSpace(os.Getenv("SSP_API_KEY"))
 	return func(c *fiber.Ctx) error {
 		// If no API key is configured, allow all requests through.
@@ -19,6 +21,15 @@ func AdminAPIKey() fiber.Handler {
 		if key == "" || key == "change-this-to-a-secret" || key == "changeme" {
 			return c.Next()
 		}
+
+		// Dashboard session cookie is accepted for browser-based admin access.
+		if s != nil {
+			token := strings.TrimSpace(c.Cookies(dashboardSessionCookieName))
+			if token != "" && s.validateDashboardSession(token) {
+				return c.Next()
+			}
+		}
+
 		auth := c.Get("Authorization")
 		if auth == "" {
 			auth = c.Query("api_key")

@@ -3,20 +3,11 @@ package openrtb
 import (
 	"strconv"
 	"strings"
+
+	openrtb2 "github.com/prebid/openrtb/v20/openrtb2"
 )
 
 // ── OpenRTB 2.6 BidResponse ──
-
-type BidResponse struct {
-	ID      string    `json:"id"`
-	SeatBid []SeatBid `json:"seatbid"`
-	Cur     string    `json:"cur,omitempty"`
-}
-
-type SeatBid struct {
-	Bid  []Bid  `json:"bid"`
-	Seat string `json:"seat,omitempty"`
-}
 
 type Bid struct {
 	ID        string   `json:"id"`
@@ -39,6 +30,36 @@ type Bid struct {
 	WinPrice  float64  `json:"-"`
 	Margin    float64  `json:"-"`
 	DemandSrc string   `json:"-"`
+}
+
+func bidFromPrebid(in openrtb2.Bid, seat string) Bid {
+	out := Bid{
+		ID:      in.ID,
+		ImpID:   in.ImpID,
+		Price:   in.Price,
+		Adm:     in.AdM,
+		NURL:    in.NURL,
+		BURL:    in.BURL,
+		LURL:    in.LURL,
+		CrID:    in.CrID,
+		ADomain: cloneStrings(in.ADomain),
+		Cat:     cloneStrings(in.Cat),
+		DealID:  in.DealID,
+		W:       int(in.W),
+		H:       int(in.H),
+		AdvID:   in.AdID,
+		MType:   int(in.MType),
+		Seat:    seat,
+	}
+
+	if len(in.Attr) > 0 {
+		out.Attr = make([]int, len(in.Attr))
+		for i, attr := range in.Attr {
+			out.Attr[i] = int(attr)
+		}
+	}
+
+	return out
 }
 
 // SubstituteMacros replaces OpenRTB auction macros in a URL.
@@ -128,9 +149,13 @@ func formatPrice(p float64) string {
 	return s
 }
 
-// Validate checks a BidResponse against a BidRequest per OpenRTB 2.6 spec.
+// ValidateBidResponse checks a BidResponse against a BidRequest per OpenRTB 2.6 spec.
 // Returns only bids that match a request impression and meet the floor.
-func (resp *BidResponse) Validate(req *BidRequest) []Bid {
+func ValidateBidResponse(resp *openrtb2.BidResponse, req *BidRequest) []Bid {
+	if resp == nil || req == nil {
+		return nil
+	}
+
 	impIDs := make(map[string]float64, len(req.Imp))
 	for _, imp := range req.Imp {
 		impIDs[imp.ID] = imp.BidFloor
@@ -146,12 +171,20 @@ func (resp *BidResponse) Validate(req *BidRequest) []Bid {
 			if bid.Price < floor {
 				continue
 			}
-			if bid.Adm == "" && bid.NURL == "" {
+			if bid.AdM == "" && bid.NURL == "" {
 				continue
 			}
-			bid.Seat = sb.Seat
-			valid = append(valid, bid)
+			valid = append(valid, bidFromPrebid(bid, sb.Seat))
 		}
 	}
 	return valid
+}
+
+func cloneStrings(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, len(in))
+	copy(out, in)
+	return out
 }

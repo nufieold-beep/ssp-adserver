@@ -299,6 +299,9 @@ func validateTargetingOptions(cfg *AdapterConfig, req *openrtb.BidRequest) bool 
 	if cfg == nil {
 		return true
 	}
+	if req == nil || req.Device == nil {
+		return true
+	}
 
 	// Geo targeting
 	if len(cfg.TargetGeos) > 0 && req.Device.Geo != nil && req.Device.Geo.Country != "" {

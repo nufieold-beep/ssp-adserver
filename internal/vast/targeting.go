@@ -14,6 +14,9 @@ func EnrichTagURL(tag string, req *openrtb.BidRequest) string {
 	if err != nil {
 		return tag
 	}
+	if req == nil {
+		return tag
+	}
 	q := u.Query()
 	set := func(key, val string) {
 		if val != "" && q.Get(key) == "" {
@@ -27,19 +30,25 @@ func EnrichTagURL(tag string, req *openrtb.BidRequest) string {
 	}
 
 	// Device signals
-	set("ip", req.Device.IP)
-	set("ua", req.Device.UA)
-	set("ifa", req.Device.IFA)
-	set("os", req.Device.OS)
-	set("make", req.Device.Make)
-	set("model", req.Device.Model)
-	setInt("devicetype", req.Device.DeviceType)
-	setInt("dnt", req.Device.DNT)
-	setInt("lmt", req.Device.LMT)
-	set("lang", req.Device.Language)
+	if req.Device != nil {
+		set("ip", req.Device.IP)
+		set("ua", req.Device.UA)
+		set("ifa", req.Device.IFA)
+		set("os", req.Device.OS)
+		set("make", req.Device.Make)
+		set("model", req.Device.Model)
+		setInt("devicetype", int(req.Device.DeviceType))
+		if req.Device.DNT != nil {
+			setInt("dnt", int(*req.Device.DNT))
+		}
+		if req.Device.Lmt != nil {
+			setInt("lmt", int(*req.Device.Lmt))
+		}
+		set("lang", req.Device.Language)
+	}
 
 	// Geo
-	if req.Device.Geo != nil {
+	if req.Device != nil && req.Device.Geo != nil {
 		set("country", req.Device.Geo.Country)
 		set("region", req.Device.Geo.Region)
 	}
@@ -53,10 +62,14 @@ func EnrichTagURL(tag string, req *openrtb.BidRequest) string {
 	// Video dimensions & duration
 	if len(req.Imp) > 0 && req.Imp[0].Video != nil {
 		v := req.Imp[0].Video
-		setInt("w", v.W)
-		setInt("h", v.H)
-		setInt("minduration", v.MinDuration)
-		setInt("maxduration", v.MaxDuration)
+		if v.W != nil {
+			setInt("w", int(*v.W))
+		}
+		if v.H != nil {
+			setInt("h", int(*v.H))
+		}
+		setInt("minduration", int(v.MinDuration))
+		setInt("maxduration", int(v.MaxDuration))
 	}
 
 	u.RawQuery = q.Encode()

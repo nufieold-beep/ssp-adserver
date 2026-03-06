@@ -16,6 +16,9 @@ func Request(req *openrtb.BidRequest) error {
 	if len(req.Imp) == 0 {
 		return errors.New("must have at least one imp")
 	}
+	if req.Device == nil {
+		req.Device = &openrtb.Device{}
+	}
 
 	// Some CTV integrations can omit IP at the edge (privacy/proxy setups).
 	// Keep the request serviceable instead of hard-failing to no-fill.
@@ -29,8 +32,8 @@ func Request(req *openrtb.BidRequest) error {
 			continue
 		}
 		hasVideoImp = true
-		if len(req.Imp[i].Video.Mimes) == 0 {
-			req.Imp[i].Video.Mimes = []string{"video/mp4", "video/webm", "application/x-mpegURL"}
+		if len(req.Imp[i].Video.MIMEs) == 0 {
+			req.Imp[i].Video.MIMEs = []string{"video/mp4", "video/webm", "application/x-mpegURL"}
 		}
 	}
 	if !hasVideoImp {

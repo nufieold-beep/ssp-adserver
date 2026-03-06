@@ -91,7 +91,7 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 	}
 	tmax := time.Duration(defaultTMaxMs) * time.Millisecond
 	if req.TMax > 0 {
-		tmax = time.Duration(req.TMax) * time.Millisecond
+		tmax = time.Duration(int(req.TMax)) * time.Millisecond
 	}
 
 	bidStart := time.Now()
@@ -226,7 +226,10 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 }
 
 func detectRequestEnvironment(req *openrtb.BidRequest) string {
-	switch req.Device.DeviceType {
+	if req == nil || req.Device == nil {
+		return "CTV"
+	}
+	switch int(req.Device.DeviceType) {
 	case 3:
 		return "CTV"
 	case 7:

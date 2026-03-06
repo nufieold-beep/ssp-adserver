@@ -1,11 +1,14 @@
 package openrtb
 
 import (
+	"encoding/json"
 	"strconv"
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
+	"github.com/prebid/openrtb/v20/adcom1"
+	openrtb2 "github.com/prebid/openrtb/v20/openrtb2"
 )
 
 // RequestDefaults controls generated OpenRTB request defaults.
@@ -26,7 +29,7 @@ var requestDefaults = RequestDefaults{
 var (
 	defaultCur       = []string{"USD"}
 	defaultMimes     = []string{"video/mp4", "video/webm", "video/ogg", "application/x-mpegURL"}
-	defaultProtocols = []int{2, 3, 5, 6, 7, 8, 11, 12} // VAST 2-4 inline+wrapper
+	defaultProtocols = []adcom1.MediaCreativeSubtype{2, 3, 5, 6, 7, 8, 11, 12} // VAST 2-4 inline+wrapper
 )
 
 var alpha2To3Country = map[string]string{
@@ -61,198 +64,31 @@ func ConfigureRequestDefaults(d RequestDefaults) {
 
 // ── OpenRTB 2.6 BidRequest (CTV-focused, per spec) ──
 
-type BidRequest struct {
-	ID      string   `json:"id"`
-	Imp     []Imp    `json:"imp"`
-	App     *App     `json:"app,omitempty"`
-	Site    *Site    `json:"site,omitempty"`
-	Device  Device   `json:"device"`
-	User    *User    `json:"user,omitempty"`
-	Regs    *Regs    `json:"regs,omitempty"`
-	At      int      `json:"at,omitempty"` // 1=first-price, 2=second-price
-	TMax    int      `json:"tmax,omitempty"`
-	AllImps int      `json:"allimps"`
-	Cur     []string `json:"cur,omitempty"`
-	BAdv    []string `json:"badv,omitempty"`
-	BCat    []string `json:"bcat,omitempty"`
-	Ext     *ReqExt  `json:"ext,omitempty"`
-}
-
-type Imp struct {
-	ID          string  `json:"id"`
-	Video       *Video  `json:"video,omitempty"`
-	Instl       int     `json:"instl"`
-	BidFloor    float64 `json:"bidfloor"`
-	BidFloorCur string  `json:"bidfloorcur,omitempty"`
-	Secure      int     `json:"secure"`
-	TagID       string  `json:"-"`
-	Ext         *ImpExt `json:"ext,omitempty"`
-}
-
-type ImpExt struct {
-	Skadn interface{} `json:"skadn,omitempty"`
-}
-
-type Video struct {
-	Mimes          []string `json:"mimes"`
-	Linearity      int      `json:"linearity,omitempty"`
-	MinDuration    int      `json:"minduration,omitempty"`
-	MaxDuration    int      `json:"maxduration,omitempty"`
-	Protocols      []int    `json:"protocols,omitempty"`
-	W              int      `json:"w"`
-	H              int      `json:"h"`
-	Skip           int      `json:"skip"`
-	Sequence       int      `json:"sequence,omitempty"`
-	BoxingAllowed  int      `json:"boxingallowed"`
-	Placement      int      `json:"placement,omitempty"`
-	PlaybackMethod []int    `json:"-"`
-	SkipMin        int      `json:"skipmin,omitempty"`
-	SkipAfter      int      `json:"skipafter,omitempty"`
-	StartDelay     *int     `json:"startdelay,omitempty"`
-	API            []int    `json:"api,omitempty"`
-	MaxExtended    int      `json:"maxextended,omitempty"`
-	Pos            int      `json:"pos,omitempty"`
-	CompanionAd    []Banner `json:"companionad,omitempty"`
-	CompanionType  []int    `json:"companiontype,omitempty"`
-}
-
-type Banner struct {
-	W   int    `json:"w,omitempty"`
-	H   int    `json:"h,omitempty"`
-	ID  string `json:"id,omitempty"`
-	Pos int    `json:"pos,omitempty"`
-}
-
-type App struct {
-	ID        string     `json:"id,omitempty"`
-	Name      string     `json:"name,omitempty"`
-	Bundle    string     `json:"bundle"`
-	StoreURL  string     `json:"storeurl,omitempty"`
-	Cat       []string   `json:"cat,omitempty"`
-	Ver       string     `json:"ver,omitempty"`
-	Publisher *Publisher `json:"publisher,omitempty"`
-	Content   *Content   `json:"content,omitempty"`
-}
-
-type Publisher struct {
-	ID string `json:"id,omitempty"`
-}
-
-type Content struct {
-	ID         string   `json:"id,omitempty"`
-	Title      string   `json:"title,omitempty"`
-	Genre      string   `json:"genre,omitempty"`
-	Cat        []string `json:"cat,omitempty"`
-	Language   string   `json:"language,omitempty"`
-	Len        int      `json:"len,omitempty"`
-	LiveStream int      `json:"livestream,omitempty"`
-}
-
-type Site struct {
-	Domain string `json:"domain,omitempty"`
-	Page   string `json:"page,omitempty"`
-}
-
-type Geo struct {
-	Lat       float64 `json:"lat,omitempty"`
-	Lon       float64 `json:"lon,omitempty"`
-	Country   string  `json:"country,omitempty"`
-	Region    string  `json:"region,omitempty"`
-	Metro     string  `json:"metro,omitempty"`
-	City      string  `json:"city,omitempty"`
-	Zip       string  `json:"zip,omitempty"`
-	Type      int     `json:"type,omitempty"`
-	Accuracy  int     `json:"accuracy,omitempty"`
-	IPService int     `json:"ipservice,omitempty"`
-}
-
-type Device struct {
-	DNT            int        `json:"dnt"`
-	UA             string     `json:"ua"`
-	IP             string     `json:"ip"`
-	Geo            *Geo       `json:"geo,omitempty"`
-	Carrier        string     `json:"carrier,omitempty"`
-	Make           string     `json:"make,omitempty"`
-	Model          string     `json:"model,omitempty"`
-	OS             string     `json:"os,omitempty"`
-	OSv            string     `json:"osv,omitempty"`
-	JS             int        `json:"js"`
-	DeviceType     int        `json:"devicetype,omitempty"`
-	IFA            string     `json:"ifa,omitempty"`
-	LMT            int        `json:"lmt"`
-	W              int        `json:"w,omitempty"`
-	H              int        `json:"h,omitempty"`
-	Language       string     `json:"language,omitempty"`
-	ConnectionType int        `json:"connectiontype,omitempty"`
-	SUA            *SUA       `json:"sua,omitempty"`
-	Ext            *DeviceExt `json:"ext,omitempty"`
-}
-
-type DeviceExt struct {
-	IFAType string `json:"ifa_type,omitempty"`
-}
-
-type SUABrandVersion struct {
-	Brand   string   `json:"brand,omitempty"`
-	Version []string `json:"version,omitempty"`
-}
-
-type SUA struct {
-	Browsers []SUABrandVersion `json:"browsers,omitempty"`
-	Platform *SUABrandVersion  `json:"platform,omitempty"`
-	Mobile   int               `json:"mobile,omitempty"`
-	Source   int               `json:"source,omitempty"`
-}
-
-type User struct {
-	ID       string   `json:"id,omitempty"`
-	BuyerUID string   `json:"buyeruid,omitempty"`
-	Gender   string   `json:"gender,omitempty"`
-	YOB      int      `json:"yob,omitempty"`
-	Ext      *UserExt `json:"ext,omitempty"`
-}
-
-type UserExt struct {
-	Consent string `json:"consent,omitempty"`
-}
-
-type Regs struct {
-	COPPA  int      `json:"coppa,omitempty"`
-	GPPSID []int    `json:"gppSid,omitempty"`
-	Ext    *RegsExt `json:"ext,omitempty"`
-}
-
-type RegsExt struct {
-	GDPR   int    `json:"gdpr,omitempty"`
-	USPriv string `json:"us_privacy,omitempty"`
-}
-
-type SChain struct {
-	Complete int          `json:"complete"`
-	Nodes    []SChainNode `json:"nodes"`
-	Ver      string       `json:"ver,omitempty"`
-}
-
-type SChainNode struct {
-	ASI    string `json:"asi"`
-	SID    string `json:"sid"`
-	HP     int    `json:"hp"`
-	RID    string `json:"rid,omitempty"`
-	Domain string `json:"domain,omitempty"`
-	Name   string `json:"name,omitempty"`
-}
-
-type ReqExt struct {
-	SChain *SChain `json:"schain,omitempty"`
-}
+type BidRequest = openrtb2.BidRequest
+type Imp = openrtb2.Imp
+type Video = openrtb2.Video
+type Banner = openrtb2.Banner
+type App = openrtb2.App
+type Publisher = openrtb2.Publisher
+type Content = openrtb2.Content
+type Site = openrtb2.Site
+type Geo = openrtb2.Geo
+type Device = openrtb2.Device
+type User = openrtb2.User
+type Regs = openrtb2.Regs
+type Source = openrtb2.Source
+type SChain = openrtb2.SupplyChain
+type SChainNode = openrtb2.SupplyChainNode
+type UserAgent = openrtb2.UserAgent
+type BrandVersion = openrtb2.BrandVersion
 
 // defaultSChain is shared across all requests (immutable).
-var defaultSChain = &ReqExt{
+var defaultSChain = &Source{
 	SChain: &SChain{
 		Complete: 1,
 		Ver:      "1.0",
 		Nodes: []SChainNode{
-			{ASI: "viadsmedia.com", SID: "pub-001", HP: 1},
+			{ASI: "viadsmedia.com", SID: "pub-001", HP: int8Ptr(1)},
 		},
 	},
 }
@@ -301,11 +137,16 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 
 	startDelay := queryInt(c, "startdelay", 0)
 	placement := queryInt(c, "placement", 1)
+	plcmt := queryInt(c, "plcmt", placement)
+	playbackMethods := queryEnumIntList(c.Query("playmethod", c.Query("playbackmethod")))
+	startDelayMode := adcom1.StartDelay(startDelay)
+	placementSubtype := adcom1.VideoPlacementSubtype(placement)
+	plcmtSubtype := adcom1.VideoPlcmtSubtype(plcmt)
 
 	req := BidRequest{
 		ID:      reqID,
-		TMax:    queryInt(c, "tmax", 0),
-		At:      1,
+		TMax:    int64(queryInt(c, "tmax", 0)),
+		AT:      1,
 		AllImps: 0,
 		Cur:     defaultCur,
 		Imp: []Imp{
@@ -313,21 +154,23 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 				ID:          reqID,
 				BidFloor:    requestDefaults.BidFloor,
 				BidFloorCur: "USD",
-				Secure:      0,
+				Secure:      int8Ptr(0),
 				TagID:       tagID,
 				Video: &Video{
-					Mimes:         defaultMimes,
-					Linearity:     1,
-					MinDuration:   minDur,
-					MaxDuration:   maxDur,
-					Protocols:     defaultProtocols,
-					W:             w,
-					H:             h,
-					Skip:          skippable,
-					Sequence:      1,
-					BoxingAllowed: 1,
-					Placement:     placement,
-					StartDelay:    &startDelay,
+					MIMEs:          defaultMimes,
+					Linearity:      adcom1.LinearityMode(1),
+					MinDuration:    int64(minDur),
+					MaxDuration:    int64(maxDur),
+					Protocols:      defaultProtocols,
+					W:              int64Ptr(int64(w)),
+					H:              int64Ptr(int64(h)),
+					Skip:           int8Ptr(skippable),
+					Sequence:       1,
+					BoxingAllowed:  int8Ptr(1),
+					Placement:      placementSubtype,
+					Plcmt:          plcmtSubtype,
+					PlaybackMethod: playbackMethods,
+					StartDelay:     &startDelayMode,
 				},
 			},
 		},
@@ -338,68 +181,89 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 			StoreURL:  c.Query("app_store_url", c.Query("storeurl")),
 			Ver:       c.Query("app_ver"),
 			Publisher: &Publisher{ID: tagID},
-			Content:   &Content{Language: language, LiveStream: 1},
+			Content:   &Content{Language: language, LiveStream: int8Ptr(1)},
 		},
-		Device: Device{
-			DNT:        dnt,
+		Device: &Device{
+			DNT:        int8Ptr(dnt),
 			UA:         ua,
 			IP:         ip,
-			Geo:        &Geo{Country: country, Region: c.Query("region"), City: c.Query("city"), Zip: c.Query("zip"), Type: 2},
+			Geo:        &Geo{Country: country, Region: c.Query("region"), City: c.Query("city"), ZIP: c.Query("zip"), Type: adcom1.LocationType(2)},
 			Make:       deviceMake,
 			Model:      c.Query("device_model"),
 			OS:         deviceOS,
-			OSv:        c.Query("osv"),
-			DeviceType: deviceType,
+			OSV:        c.Query("osv"),
+			DeviceType: adcom1.DeviceType(deviceType),
 			IFA:        ifa,
-			LMT:        lmt,
-			W:          w,
-			H:          h,
+			Lmt:        int8Ptr(lmt),
+			W:          int64(w),
+			H:          int64(h),
 			Language:   language,
 			SUA:        buildSUAFromUserAgent(ua, deviceType, deviceMake, deviceOS),
 		},
 		Regs: &Regs{
 			COPPA:  0,
-			GPPSID: []int{0},
+			GPPSID: []int8{0},
 		},
-		Ext: defaultSChain,
+		Source: cloneSource(defaultSChain),
 	}
 
 	if ifaType := detectIFAType(ua, deviceMake, deviceOS); ifaType != "" {
-		req.Device.Ext = &DeviceExt{IFAType: ifaType}
+		req.Device.Ext = marshalRawJSON(map[string]string{"ifa_type": ifaType})
 	}
 
 	if ifa != "" {
-		req.User = &User{ID: ifa, Ext: &UserExt{}}
+		req.User = &User{ID: ifa}
 	}
 
 	if ct := c.Query("connectiontype"); ct != "" {
-		req.Device.ConnectionType, _ = strconv.Atoi(ct)
+		if parsed, err := strconv.Atoi(ct); err == nil {
+			connType := adcom1.ConnectionType(parsed)
+			req.Device.ConnectionType = &connType
+		}
 	}
 
 	if ctGenre := c.Query("ct_genre"); ctGenre != "" {
 		cats := strings.Split(ctGenre, ",")
 		req.App.Cat = cats
+		if req.App.Content == nil {
+			req.App.Content = &Content{}
+		}
 		req.App.Content.Genre = ctGenre
 		req.App.Content.Cat = cats
 	}
 
 	if coppa := c.Query("coppa"); coppa != "" {
-		req.Regs.COPPA, _ = strconv.Atoi(coppa)
+		if parsed, err := strconv.Atoi(coppa); err == nil {
+			req.Regs.COPPA = int8(parsed)
+		}
 	}
 	if usPriv := c.Query("us_privacy"); usPriv != "" {
-		if req.Regs.Ext == nil {
-			req.Regs.Ext = &RegsExt{}
-		}
-		req.Regs.Ext.USPriv = usPriv
+		req.Regs.USPrivacy = usPriv
 	}
 	if gdpr := c.Query("gdpr"); gdpr != "" {
-		if req.Regs.Ext == nil {
-			req.Regs.Ext = &RegsExt{}
+		if parsed, err := strconv.Atoi(gdpr); err == nil {
+			gdprFlag := int8(parsed)
+			req.Regs.GDPR = &gdprFlag
 		}
-		req.Regs.Ext.GDPR, _ = strconv.Atoi(gdpr)
 	}
 
 	return req
+}
+
+func cloneSource(src *Source) *Source {
+	if src == nil {
+		return nil
+	}
+	out := *src
+	if src.SChain != nil {
+		sChainCopy := *src.SChain
+		if len(src.SChain.Nodes) > 0 {
+			sChainCopy.Nodes = make([]SChainNode, len(src.SChain.Nodes))
+			copy(sChainCopy.Nodes, src.SChain.Nodes)
+		}
+		out.SChain = &sChainCopy
+	}
+	return &out
 }
 
 func normalizeBundleToken(v string) string {
@@ -447,22 +311,52 @@ func queryIntFallback(c *fiber.Ctx, primary, fallback string, def int) int {
 	return def
 }
 
+// queryEnumIntList parses comma/pipe/space separated integer enum values.
+func queryEnumIntList(raw string) []adcom1.PlaybackMethod {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	tokens := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == '|' || r == ' ' || r == '\t'
+	})
+	if len(tokens) == 0 {
+		return nil
+	}
+	out := make([]adcom1.PlaybackMethod, 0, len(tokens))
+	for _, token := range tokens {
+		n, err := strconv.Atoi(strings.TrimSpace(token))
+		if err != nil {
+			continue
+		}
+		out = append(out, adcom1.PlaybackMethod(n))
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // buildSUAFromUserAgent builds device.sua from user-agent and device hints.
-func buildSUAFromUserAgent(ua string, deviceType int, make, os string) *SUA {
+func buildSUAFromUserAgent(ua string, deviceType int, make, os string) *UserAgent {
 	uaL := strings.ToLower(ua)
 	platformBrand := detectPlatformBrand(uaL, make, os)
 	browserBrand, browserVer := detectBrowserBrandVersionFromUA(ua, uaL, platformBrand, make, os)
 	mobile := detectMobileFlag(uaL, deviceType)
+	browser := BrandVersion{Brand: browserBrand}
+	if browserVer != "" {
+		browser.Version = []string{browserVer}
+	}
 
-	return &SUA{
-		Browsers: []SUABrandVersion{{Brand: browserBrand, Version: []string{browserVer}}},
-		Platform: &SUABrandVersion{Brand: platformBrand},
-		Mobile:   mobile,
-		Source:   3,
+	return &UserAgent{
+		Browsers: []BrandVersion{browser},
+		Platform: &BrandVersion{Brand: platformBrand},
+		Mobile:   &mobile,
+		Source:   adcom1.UserAgentSource(3),
 	}
 }
 
-func detectMobileFlag(uaL string, deviceType int) int {
+func detectMobileFlag(uaL string, deviceType int) int8 {
 	switch deviceType {
 	case 1, 4, 5:
 		return 1
@@ -473,6 +367,27 @@ func detectMobileFlag(uaL string, deviceType int) int {
 		return 1
 	}
 	return 0
+}
+
+func int8Ptr(v int) *int8 {
+	x := int8(v)
+	return &x
+}
+
+func int64Ptr(v int64) *int64 {
+	x := v
+	return &x
+}
+
+func marshalRawJSON(v interface{}) json.RawMessage {
+	if v == nil {
+		return nil
+	}
+	encoded, err := json.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	return encoded
 }
 
 func detectPlatformBrand(uaL, make, os string) string {

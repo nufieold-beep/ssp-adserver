@@ -120,9 +120,11 @@ func buildRuleMatchCtx(req *openrtb.BidRequest) ruleMatchCtx {
 	if req == nil {
 		return ctx
 	}
-	ctx.deviceType = req.Device.DeviceType
-	if req.Device.Geo != nil {
-		ctx.country = strings.ToUpper(strings.TrimSpace(req.Device.Geo.Country))
+	if req.Device != nil {
+		ctx.deviceType = int(req.Device.DeviceType)
+		if req.Device.Geo != nil {
+			ctx.country = strings.ToUpper(strings.TrimSpace(req.Device.Geo.Country))
+		}
 	}
 	if req.App != nil {
 		ctx.bundle = strings.ToLower(strings.TrimSpace(req.App.Bundle))

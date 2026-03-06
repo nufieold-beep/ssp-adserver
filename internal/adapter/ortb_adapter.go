@@ -9,6 +9,8 @@ import (
 	"ssp/internal/httputil"
 	"ssp/internal/openrtb"
 	"strings"
+
+	openrtb2 "github.com/prebid/openrtb/v20/openrtb2"
 )
 
 // ORTBAdapter implements DemandAdapter for OpenRTB 2.5/2.6 DSP endpoints.
@@ -71,7 +73,13 @@ func (a *ORTBAdapter) RequestBids(ctx context.Context, req *openrtb.BidRequest) 
 	if err != nil {
 		return nil, err
 	}
-	httputil.SetORTBHeaders(httpReq, outReq.ID, outReq.Device.UA, outReq.Device.IP)
+	ua := ""
+	ip := ""
+	if outReq.Device != nil {
+		ua = outReq.Device.UA
+		ip = outReq.Device.IP
+	}
+	httputil.SetORTBHeaders(httpReq, outReq.ID, ua, ip)
 	if a.gzipSupport {
 		httpReq.Header.Set("Content-Encoding", "gzip")
 		httpReq.Header.Set("Accept-Encoding", "gzip")
@@ -104,12 +112,12 @@ func (a *ORTBAdapter) RequestBids(ctx context.Context, req *openrtb.BidRequest) 
 	}
 	defer closeFn()
 
-	var bidResp openrtb.BidResponse
-	if err := json.NewDecoder(reader).Decode(&bidResp); err != nil {
+	var prebidResp openrtb2.BidResponse
+	if err := json.NewDecoder(reader).Decode(&prebidResp); err != nil {
 		return nil, err
 	}
 
-	validatedBids := bidResp.Validate(req)
+	validatedBids := openrtb.ValidateBidResponse(&prebidResp, req)
 	if len(validatedBids) == 0 {
 		return &BidResult{AdapterID: a.id, NoBid: true}, nil
 	}
@@ -147,13 +155,13 @@ func (a *ORTBAdapter) applyEndpointConfig(req *openrtb.BidRequest) *openrtb.BidR
 	}
 
 	// Supply chain: remove ext.schain if not enabled for this endpoint
-	if !a.schainEnabled && clonedReq.Ext != nil && clonedReq.Ext.SChain != nil {
-		clonedReq.Ext = nil
+	if !a.schainEnabled && clonedReq.Source != nil && clonedReq.Source.SChain != nil {
+		clonedReq.Source = nil
 	}
 
 	// Remove PChain: strip schain nodes (pchain removal)
-	if a.removePChain && clonedReq.Ext != nil && clonedReq.Ext.SChain != nil {
-		clonedReq.Ext = nil
+	if a.removePChain && clonedReq.Source != nil && clonedReq.Source.SChain != nil {
+		clonedReq.Source = nil
 	}
 
 	return &clonedReq

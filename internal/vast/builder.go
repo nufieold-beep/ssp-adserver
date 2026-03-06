@@ -96,10 +96,13 @@ func Build(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) string {
 
 // resolveRequestID picks the best identifier from the request context.
 func resolveRequestID(req *openrtb.BidRequest) string {
+	if req == nil {
+		return ""
+	}
 	if req.User != nil && req.User.ID != "" {
 		return req.User.ID
 	}
-	if req.Device.IFA != "" {
+	if req.Device != nil && req.Device.IFA != "" {
 		return req.Device.IFA
 	}
 	return req.ID
@@ -182,8 +185,14 @@ func impressionBlock(evtBase string, bid *openrtb.Bid, req *openrtb.BidRequest) 
 	}
 
 	ctry := ""
-	if req.Device.Geo != nil {
-		ctry = metricCountryCode(req.Device.Geo.Country)
+	ip := ""
+	deviceType := 0
+	if req.Device != nil {
+		ip = req.Device.IP
+		deviceType = int(req.Device.DeviceType)
+		if req.Device.Geo != nil {
+			ctry = metricCountryCode(req.Device.Geo.Country)
+		}
 	}
 	bndl := ""
 	if req.App != nil {
@@ -199,8 +208,8 @@ func impressionBlock(evtBase string, bid *openrtb.Bid, req *openrtb.BidRequest) 
 		"cmp":   {bid.Seat},
 		"crid":  {bid.CrID},
 		"ctry":  {ctry},
-		"ip":    {req.Device.IP},
-		"env":   {deviceEnv(req.Device.DeviceType)},
+		"ip":    {ip},
+		"env":   {deviceEnv(deviceType)},
 		"sr":    {supplyRef(evtBase)},
 		"bndl":  {bndl},
 		"adom":  {adom},
