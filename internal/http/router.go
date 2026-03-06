@@ -41,6 +41,9 @@ type Campaign struct {
 	BudgetDaily   float64 `json:"budget_daily"`
 	BudgetTotal   float64 `json:"budget_total"`
 	SpentToday    float64 `json:"spent_today"`
+	SpentTotal    float64 `json:"spent_total"`
+	FrequencyCap  int     `json:"frequency_cap"`
+	PacingEnabled bool    `json:"pacing_enabled"`
 	Env           string  `json:"env"`
 	Description   string  `json:"description"`
 	IabCategories string  `json:"iab_categories"`
@@ -133,6 +136,8 @@ type TargetingRule struct {
 
 type AdDecision struct {
 	Time       time.Time `json:"time"`
+	CampaignID int       `json:"campaign_id,omitempty"`
+	Campaign   string    `json:"campaign,omitempty"`
 	CreativeID string    `json:"creative_id"`
 	Source     string    `json:"source"`
 	ADomain    string    `json:"adomain"`
@@ -142,6 +147,7 @@ type AdDecision struct {
 	Seat       string    `json:"seat"`
 	AdmType    string    `json:"adm_type"`
 	DemandEp   string    `json:"demand_endpoint"`
+	Delivery   string    `json:"delivery_status,omitempty"`
 	AppBundle  string    `json:"app_bundle"`
 	Country    string    `json:"country"`
 	DeviceType string    `json:"device_type"`
@@ -178,6 +184,9 @@ type store struct {
 
 	adDecisions []AdDecision
 
+	budgetDayKey   string
+	frequencyByKey map[string]int
+
 	dashboardUser string
 	dashboardPass string
 	statePath     string
@@ -185,10 +194,16 @@ type store struct {
 
 type supplyDemandState struct {
 	Version              int              `json:"version"`
+	NextCampaignID       int              `json:"next_campaign_id"`
+	NextAdvertiserID     int              `json:"next_advertiser_id"`
+	NextRuleID           int              `json:"next_rule_id"`
 	NextSupplyTagID      int              `json:"next_supply_tag_id"`
 	NextDemandEndpointID int              `json:"next_demand_endpoint_id"`
 	NextDemandVastTagID  int              `json:"next_demand_vast_tag_id"`
 	NextMappingID        int              `json:"next_mapping_id"`
+	Campaigns            []Campaign       `json:"campaigns"`
+	Advertisers          []Advertiser     `json:"advertisers"`
+	TargetingRules       []TargetingRule  `json:"targeting_rules"`
 	SupplyTags           []SupplyTag      `json:"supply_tags"`
 	DemandEndpoints      []DemandEndpoint `json:"demand_endpoints"`
 	DemandVastTags       []DemandVastTag  `json:"demand_vast_tags"`
@@ -217,6 +232,8 @@ func newStore() *store {
 		mappingsBySID:        make(map[int][]*SDMapping),
 		targetingRules:       make(map[int]*TargetingRule),
 		nextRuleID:           1,
+		budgetDayKey:         time.Now().UTC().Format("2006-01-02"),
+		frequencyByKey:       make(map[string]int),
 		dashboardUser:        "admin",
 		dashboardPass:        "admin",
 	}
@@ -263,6 +280,48 @@ func (s *store) loadSupplyDemandState(statePath string) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	s.campaigns = make(map[int]*Campaign, len(snapshot.Campaigns))
+	maxCampaignID := 0
+	for i := range snapshot.Campaigns {
+		campaign := snapshot.Campaigns[i]
+		if campaign.ID <= 0 {
+			continue
+		}
+		c := campaign
+		s.campaigns[c.ID] = &c
+		if c.ID > maxCampaignID {
+			maxCampaignID = c.ID
+		}
+	}
+
+	s.advertisers = make(map[int]*Advertiser, len(snapshot.Advertisers))
+	maxAdvertiserID := 0
+	for i := range snapshot.Advertisers {
+		advertiser := snapshot.Advertisers[i]
+		if advertiser.ID <= 0 {
+			continue
+		}
+		a := advertiser
+		s.advertisers[a.ID] = &a
+		if a.ID > maxAdvertiserID {
+			maxAdvertiserID = a.ID
+		}
+	}
+
+	s.targetingRules = make(map[int]*TargetingRule, len(snapshot.TargetingRules))
+	maxRuleID := 0
+	for i := range snapshot.TargetingRules {
+		rule := snapshot.TargetingRules[i]
+		if rule.ID <= 0 {
+			continue
+		}
+		r := rule
+		s.targetingRules[r.ID] = &r
+		if r.ID > maxRuleID {
+			maxRuleID = r.ID
+		}
+	}
 
 	s.supplyTags = make(map[int]*SupplyTag, len(snapshot.SupplyTags))
 	maxSupplyID := 0
@@ -320,10 +379,15 @@ func (s *store) loadSupplyDemandState(statePath string) error {
 		}
 	}
 
+	s.nextCampaignID = maxInt(1, snapshot.NextCampaignID, maxCampaignID+1)
+	s.nextAdvertiserID = maxInt(1, snapshot.NextAdvertiserID, maxAdvertiserID+1)
+	s.nextRuleID = maxInt(1, snapshot.NextRuleID, maxRuleID+1)
 	s.nextSupplyTagID = maxInt(1, snapshot.NextSupplyTagID, maxSupplyID+1)
 	s.nextDemandEndpointID = maxInt(1, snapshot.NextDemandEndpointID, maxDemandEndpointID+1)
 	s.nextDemandVastTagID = maxInt(1, snapshot.NextDemandVastTagID, maxDemandVastTagID+1)
 	s.nextMappingID = maxInt(1, snapshot.NextMappingID, maxMappingID+1)
+	s.budgetDayKey = time.Now().UTC().Format("2006-01-02")
+	s.frequencyByKey = make(map[string]int)
 
 	s.rebuildSupplyIndexLocked()
 	s.rebuildMappingIndexLocked()
@@ -365,10 +429,31 @@ func (s *store) writeSupplyDemandStateLocked() error {
 }
 
 func (s *store) snapshotSupplyDemandStateLocked(dst *supplyDemandState) {
+	dst.NextCampaignID = s.nextCampaignID
+	dst.NextAdvertiserID = s.nextAdvertiserID
+	dst.NextRuleID = s.nextRuleID
 	dst.NextSupplyTagID = s.nextSupplyTagID
 	dst.NextDemandEndpointID = s.nextDemandEndpointID
 	dst.NextDemandVastTagID = s.nextDemandVastTagID
 	dst.NextMappingID = s.nextMappingID
+
+	dst.Campaigns = make([]Campaign, 0, len(s.campaigns))
+	for _, campaign := range s.campaigns {
+		dst.Campaigns = append(dst.Campaigns, *campaign)
+	}
+	sort.Slice(dst.Campaigns, func(i, j int) bool { return dst.Campaigns[i].ID < dst.Campaigns[j].ID })
+
+	dst.Advertisers = make([]Advertiser, 0, len(s.advertisers))
+	for _, advertiser := range s.advertisers {
+		dst.Advertisers = append(dst.Advertisers, *advertiser)
+	}
+	sort.Slice(dst.Advertisers, func(i, j int) bool { return dst.Advertisers[i].ID < dst.Advertisers[j].ID })
+
+	dst.TargetingRules = make([]TargetingRule, 0, len(s.targetingRules))
+	for _, rule := range s.targetingRules {
+		dst.TargetingRules = append(dst.TargetingRules, *rule)
+	}
+	sort.Slice(dst.TargetingRules, func(i, j int) bool { return dst.TargetingRules[i].ID < dst.TargetingRules[j].ID })
 
 	dst.SupplyTags = make([]SupplyTag, 0, len(s.supplyTags))
 	for _, tag := range s.supplyTags {
@@ -602,7 +687,208 @@ func enrichFromSupplyTag(req *openrtb.BidRequest, tag *SupplyTag) {
 	}
 }
 
-func (s *store) recordAdDecision(req *openrtb.BidRequest, winner *openrtb.Bid, winPrice float64, source, demandEp string) {
+func normalizeDomainValue(v string) string {
+	v = strings.TrimSpace(strings.ToLower(v))
+	v = strings.TrimPrefix(v, "http://")
+	v = strings.TrimPrefix(v, "https://")
+	v = strings.TrimPrefix(v, "www.")
+	if i := strings.IndexByte(v, '/'); i >= 0 {
+		v = v[:i]
+	}
+	return strings.TrimSpace(v)
+}
+
+func splitDomains(raw string) []string {
+	tokens := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == '|' || r == ' ' || r == '\t' || r == '\n'
+	})
+	out := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		n := normalizeDomainValue(token)
+		if n != "" {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+func domainMatchesCampaign(campaignDomainsRaw, winnerDomain string) bool {
+	winnerDomain = normalizeDomainValue(winnerDomain)
+	if winnerDomain == "" {
+		return false
+	}
+	for _, campaignDomain := range splitDomains(campaignDomainsRaw) {
+		if campaignDomain == winnerDomain {
+			return true
+		}
+	}
+	return false
+}
+
+func utcDayProgress() float64 {
+	now := time.Now().UTC()
+	seconds := now.Hour()*3600 + now.Minute()*60 + now.Second()
+	return float64(seconds+1) / 86400.0
+}
+
+func buildDeliveryUserKey(req *openrtb.BidRequest) string {
+	if req == nil {
+		return "anonymous"
+	}
+	if req.User != nil && strings.TrimSpace(req.User.ID) != "" {
+		return "uid:" + strings.TrimSpace(req.User.ID)
+	}
+	if strings.TrimSpace(req.Device.IFA) != "" {
+		return "ifa:" + strings.TrimSpace(req.Device.IFA)
+	}
+	if strings.TrimSpace(req.Device.IP) != "" {
+		bundle := ""
+		if req.App != nil {
+			bundle = strings.TrimSpace(req.App.Bundle)
+		}
+		if bundle != "" {
+			return "ip:" + strings.TrimSpace(req.Device.IP) + "|bundle:" + bundle
+		}
+		return "ip:" + strings.TrimSpace(req.Device.IP)
+	}
+	return "anonymous"
+}
+
+func (s *store) resetDailyDeliveryStateLocked() {
+	today := time.Now().UTC().Format("2006-01-02")
+	if s.budgetDayKey == today {
+		return
+	}
+	s.budgetDayKey = today
+	s.frequencyByKey = make(map[string]int)
+	for _, campaign := range s.campaigns {
+		campaign.SpentToday = 0
+	}
+}
+
+func (s *store) campaignFrequencyUsedLocked(campaignID int) int {
+	if campaignID <= 0 {
+		return 0
+	}
+	prefix := strconv.Itoa(campaignID) + "|"
+	total := 0
+	for key, count := range s.frequencyByKey {
+		if strings.HasPrefix(key, prefix) {
+			total += count
+		}
+	}
+	return total
+}
+
+func (s *store) selectCampaignForWinnerLocked(winner *openrtb.Bid) *Campaign {
+	winnerDomain := ""
+	if winner != nil && len(winner.ADomain) > 0 {
+		winnerDomain = winner.ADomain[0]
+	}
+
+	var matched *Campaign
+	var fallback *Campaign
+	for _, campaign := range s.campaigns {
+		if campaign.Status != 1 {
+			continue
+		}
+		if strings.TrimSpace(campaign.ADomain) == "" {
+			if fallback == nil || campaign.ID < fallback.ID {
+				fallback = campaign
+			}
+			continue
+		}
+		if domainMatchesCampaign(campaign.ADomain, winnerDomain) {
+			if matched == nil || campaign.ID < matched.ID {
+				matched = campaign
+			}
+		}
+	}
+	if matched != nil {
+		return matched
+	}
+	return fallback
+}
+
+func (s *store) reserveCampaignDelivery(req *openrtb.BidRequest, winner *openrtb.Bid, winPrice float64) (int, string, string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.resetDailyDeliveryStateLocked()
+
+	campaign := s.selectCampaignForWinnerLocked(winner)
+	if campaign == nil {
+		return 0, "", "served_unmanaged", true
+	}
+
+	spendDelta := 0.0
+	if winner != nil {
+		spendDelta = winner.ReportingPrice(winPrice) / 1000.0
+	}
+	if spendDelta < 0 {
+		spendDelta = 0
+	}
+
+	if campaign.BudgetDaily > 0 && campaign.SpentToday+spendDelta > campaign.BudgetDaily {
+		return campaign.ID, campaign.Name, "blocked_budget_daily", false
+	}
+	if campaign.BudgetTotal > 0 && campaign.SpentTotal+spendDelta > campaign.BudgetTotal {
+		return campaign.ID, campaign.Name, "blocked_budget_total", false
+	}
+
+	if campaign.PacingEnabled && campaign.BudgetDaily > 0 {
+		allowedByNow := (campaign.BudgetDaily * utcDayProgress()) + (campaign.BudgetDaily * 0.10)
+		if campaign.SpentToday+spendDelta > allowedByNow {
+			return campaign.ID, campaign.Name, "blocked_pacing", false
+		}
+	}
+
+	if campaign.FrequencyCap > 0 {
+		userKey := buildDeliveryUserKey(req)
+		freqKey := strconv.Itoa(campaign.ID) + "|" + userKey
+		if s.frequencyByKey[freqKey] >= campaign.FrequencyCap {
+			return campaign.ID, campaign.Name, "blocked_frequency_cap", false
+		}
+		s.frequencyByKey[freqKey]++
+	}
+
+	campaign.SpentToday += spendDelta
+	campaign.SpentTotal += spendDelta
+
+	return campaign.ID, campaign.Name, "served", true
+}
+
+func winnerPrimaryDomain(winner *openrtb.Bid) string {
+	if winner == nil || len(winner.ADomain) == 0 {
+		return ""
+	}
+	return winner.ADomain[0]
+}
+
+func requestEnvironment(req *openrtb.BidRequest) string {
+	if req == nil {
+		return "CTV"
+	}
+	switch req.Device.DeviceType {
+	case 1, 4, 5:
+		return "Mobile"
+	case 2:
+		return "Desktop"
+	case 7:
+		return "STB"
+	default:
+		return "CTV"
+	}
+}
+
+func requestBundle(req *openrtb.BidRequest) string {
+	if req == nil || req.App == nil {
+		return ""
+	}
+	return req.App.Bundle
+}
+
+func (s *store) recordAdDecision(req *openrtb.BidRequest, winner *openrtb.Bid, winPrice float64, source, demandEp string, campaignID int, campaignName, deliveryStatus string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	country := ""
@@ -634,11 +920,12 @@ func (s *store) recordAdDecision(req *openrtb.BidRequest, winner *openrtb.Bid, w
 	netPrice := winner.ReportingPrice(winPrice)
 
 	s.adDecisions = append(s.adDecisions, AdDecision{
-		Time: time.Now(), CreativeID: winner.CrID, Source: source,
+		Time: time.Now(), CampaignID: campaignID, Campaign: campaignName,
+		CreativeID: winner.CrID, Source: source,
 		ADomain: adomain, Seat: winner.Seat,
 		BidPrice: winner.Price, NetPrice: netPrice,
 		AdmType: "vast", AppBundle: appBundle, Country: country, DeviceType: devType,
-		DemandEp: demandEp,
+		DemandEp: demandEp, Delivery: deliveryStatus,
 	})
 	if len(s.adDecisions) > 500 {
 		s.adDecisions = s.adDecisions[len(s.adDecisions)-500:]
@@ -866,7 +1153,17 @@ func registerCampaignRoutes(app *fiber.App, s *store, auth fiber.Handler) {
 		if camp.Status == 0 {
 			camp.Status = 1
 		}
+		if camp.BudgetDaily > 0 && !camp.PacingEnabled {
+			camp.PacingEnabled = true
+		}
+		if camp.FrequencyCap < 0 {
+			camp.FrequencyCap = 0
+		}
 		s.campaigns[camp.ID] = &camp
+		if err := s.writeSupplyDemandStateLocked(); err != nil {
+			s.mu.Unlock()
+			return c.Status(500).JSON(fiber.Map{"error": "Failed to persist runtime state"})
+		}
 		s.mu.Unlock()
 		return c.Status(201).JSON(camp)
 	})
@@ -904,6 +1201,31 @@ func registerCampaignRoutes(app *fiber.App, s *store, auth fiber.Handler) {
 		if update.ADomain != "" {
 			camp.ADomain = update.ADomain
 		}
+
+		var present map[string]json.RawMessage
+		_ = json.Unmarshal(c.Body(), &present)
+		if _, ok := present["budget_total"]; ok {
+			camp.BudgetTotal = update.BudgetTotal
+		}
+		if _, ok := present["spent_today"]; ok {
+			camp.SpentToday = update.SpentToday
+		}
+		if _, ok := present["spent_total"]; ok {
+			camp.SpentTotal = update.SpentTotal
+		}
+		if _, ok := present["frequency_cap"]; ok {
+			if update.FrequencyCap < 0 {
+				return c.Status(400).JSON(fiber.Map{"error": "frequency_cap must be >= 0"})
+			}
+			camp.FrequencyCap = update.FrequencyCap
+		}
+		if _, ok := present["pacing_enabled"]; ok {
+			camp.PacingEnabled = update.PacingEnabled
+		}
+
+		if err := s.writeSupplyDemandStateLocked(); err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "Failed to persist runtime state"})
+		}
 		return c.JSON(camp)
 	})
 
@@ -925,6 +1247,9 @@ func registerCampaignRoutes(app *fiber.App, s *store, auth fiber.Handler) {
 			return c.Status(404).JSON(fiber.Map{"error": "Not found"})
 		}
 		camp.Status = body.Status
+		if err := s.writeSupplyDemandStateLocked(); err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "Failed to persist runtime state"})
+		}
 		return c.JSON(camp)
 	})
 
@@ -939,6 +1264,9 @@ func registerCampaignRoutes(app *fiber.App, s *store, auth fiber.Handler) {
 			return c.Status(404).JSON(fiber.Map{"error": "Not found"})
 		}
 		delete(s.campaigns, id)
+		if err := s.writeSupplyDemandStateLocked(); err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "Failed to persist runtime state"})
+		}
 		return c.JSON(fiber.Map{"deleted": id})
 	})
 }
@@ -984,6 +1312,10 @@ func registerAdvertiserRoutes(app *fiber.App, s *store, auth fiber.Handler) {
 			a.Status = 1
 		}
 		s.advertisers[a.ID] = &a
+		if err := s.writeSupplyDemandStateLocked(); err != nil {
+			s.mu.Unlock()
+			return c.Status(500).JSON(fiber.Map{"error": "Failed to persist runtime state"})
+		}
 		s.mu.Unlock()
 		return c.Status(201).JSON(a)
 	})
@@ -1012,6 +1344,9 @@ func registerAdvertiserRoutes(app *fiber.App, s *store, auth fiber.Handler) {
 		if update.Email != "" {
 			a.Email = update.Email
 		}
+		if err := s.writeSupplyDemandStateLocked(); err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "Failed to persist runtime state"})
+		}
 		return c.JSON(a)
 	})
 
@@ -1026,6 +1361,9 @@ func registerAdvertiserRoutes(app *fiber.App, s *store, auth fiber.Handler) {
 			return c.Status(404).JSON(fiber.Map{"error": "Not found"})
 		}
 		delete(s.advertisers, id)
+		if err := s.writeSupplyDemandStateLocked(); err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "Failed to persist runtime state"})
+		}
 		return c.JSON(fiber.Map{"deleted": id})
 	})
 }
@@ -1065,6 +1403,10 @@ func registerTargetingRoutes(app *fiber.App, s *store, auth fiber.Handler) {
 		s.nextRuleID++
 		rule.CampaignID = campID
 		s.targetingRules[rule.ID] = &rule
+		if err := s.writeSupplyDemandStateLocked(); err != nil {
+			s.mu.Unlock()
+			return c.Status(500).JSON(fiber.Map{"error": "Failed to persist runtime state"})
+		}
 		s.mu.Unlock()
 		return c.Status(201).JSON(rule)
 	})
@@ -1081,6 +1423,9 @@ func registerTargetingRoutes(app *fiber.App, s *store, auth fiber.Handler) {
 			return c.Status(404).JSON(fiber.Map{"error": "Not found"})
 		}
 		delete(s.targetingRules, id)
+		if err := s.writeSupplyDemandStateLocked(); err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "Failed to persist runtime state"})
+		}
 		return c.JSON(fiber.Map{"deleted": id})
 	})
 }
@@ -1117,13 +1462,56 @@ func registerAnalyticsRoutes(app *fiber.App, s *store, metrics *monitor.Metrics)
 
 	app.Get("/api/v1/analytics/campaign/:id/budget", func(c *fiber.Ctx) error {
 		id, _ := c.ParamsInt("id")
-		s.mu.RLock()
+		s.mu.Lock()
+		s.resetDailyDeliveryStateLocked()
 		camp, ok := s.campaigns[id]
-		s.mu.RUnlock()
-		if !ok {
-			return c.JSON(fiber.Map{"budget_daily": 0, "spent_today": 0, "pacing": 0})
+		var campSnapshot Campaign
+		frequencyUsed := 0
+		if ok {
+			campSnapshot = *camp
+			frequencyUsed = s.campaignFrequencyUsedLocked(id)
 		}
-		return c.JSON(fiber.Map{"budget_daily": camp.BudgetDaily, "budget_total": camp.BudgetTotal, "spent_today": camp.SpentToday})
+		s.mu.Unlock()
+		if !ok {
+			return c.JSON(fiber.Map{
+				"budget_daily":      0,
+				"budget_total":      0,
+				"spent_today":       0,
+				"spent_total":       0,
+				"remaining_daily":   0,
+				"remaining_total":   0,
+				"frequency_cap":     0,
+				"frequency_used":    0,
+				"pacing_enabled":    false,
+				"pacing_target_now": 0,
+			})
+		}
+
+		remainingDaily := campSnapshot.BudgetDaily - campSnapshot.SpentToday
+		if remainingDaily < 0 {
+			remainingDaily = 0
+		}
+		remainingTotal := campSnapshot.BudgetTotal - campSnapshot.SpentTotal
+		if remainingTotal < 0 {
+			remainingTotal = 0
+		}
+		pacingTargetNow := 0.0
+		if campSnapshot.PacingEnabled && campSnapshot.BudgetDaily > 0 {
+			pacingTargetNow = (campSnapshot.BudgetDaily * utcDayProgress()) + (campSnapshot.BudgetDaily * 0.10)
+		}
+
+		return c.JSON(fiber.Map{
+			"budget_daily":      campSnapshot.BudgetDaily,
+			"budget_total":      campSnapshot.BudgetTotal,
+			"spent_today":       campSnapshot.SpentToday,
+			"spent_total":       campSnapshot.SpentTotal,
+			"remaining_daily":   remainingDaily,
+			"remaining_total":   remainingTotal,
+			"frequency_cap":     campSnapshot.FrequencyCap,
+			"frequency_used":    frequencyUsed,
+			"pacing_enabled":    campSnapshot.PacingEnabled,
+			"pacing_target_now": pacingTargetNow,
+		})
 	})
 
 	app.Get("/api/v1/analytics/campaign/:id/realtime", func(c *fiber.Ctx) error {
@@ -1132,14 +1520,33 @@ func registerAnalyticsRoutes(app *fiber.App, s *store, metrics *monitor.Metrics)
 		cm.SpendMu.Lock()
 		spend := cm.Spend
 		cm.SpendMu.Unlock()
+
+		s.mu.Lock()
+		s.resetDailyDeliveryStateLocked()
+		camp := s.campaigns[id]
+		spentToday := 0.0
+		spentTotal := 0.0
+		if camp != nil {
+			spentToday = camp.SpentToday
+			spentTotal = camp.SpentTotal
+		}
+		frequencyUsed := s.campaignFrequencyUsedLocked(id)
+		s.mu.Unlock()
+
 		return c.JSON(fiber.Map{
 			"campaign_id": id, "requests": cm.Requests.Load(), "impressions": cm.Impressions.Load(),
 			"completions": cm.Completions.Load(), "spend": spend,
+			"spent_today": spentToday, "spent_total": spentTotal, "frequency_used": frequencyUsed,
 		})
 	})
 
 	app.Post("/api/v1/analytics/flush", func(c *fiber.Ctx) error {
-		return c.JSON(fiber.Map{"flushed": true})
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if err := s.writeSupplyDemandStateLocked(); err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "Failed to flush runtime state"})
+		}
+		return c.JSON(fiber.Map{"flushed": true, "state_path": s.statePath})
 	})
 
 	app.Get("/api/v1/analytics/reports/demand", func(c *fiber.Ctx) error {
@@ -2050,8 +2457,32 @@ func supplyTagVastHandler(p *pipeline.Pipeline, metrics *monitor.Metrics, s *sto
 			return c.Type("xml").SendString(result.VAST)
 		}
 
+		campaignID, campaignName, deliveryStatus, allowed := s.reserveCampaignDelivery(&req, result.Winner, result.WinPrice)
+		if !allowed {
+			metrics.RecordNoBid()
+			metrics.AddTrafficEvent(monitor.TrafficEvent{
+				Type:      "delivery_block",
+				RequestID: req.ID,
+				Env:       requestEnvironment(&req),
+				Details:   deliveryStatus,
+				Campaign:  campaignName,
+				Bundle:    requestBundle(&req),
+				ADomain:   winnerPrimaryDomain(result.Winner),
+			})
+			return c.Type("xml").SendString(vast.BuildNoAd())
+		}
+
+		if campaignID > 0 {
+			cm := metrics.GetCampaignMetric(campaignID)
+			cm.Opps.Add(1)
+			cm.Impressions.Add(1)
+			cm.SpendMu.Lock()
+			cm.Spend += result.Winner.ReportingPrice(result.WinPrice) / 1000.0
+			cm.SpendMu.Unlock()
+		}
+
 		// Record ad decision
-		s.recordAdDecision(&req, result.Winner, result.WinPrice, "supply_tag", result.AdapterID)
+		s.recordAdDecision(&req, result.Winner, result.WinPrice, "supply_tag", result.AdapterID, campaignID, campaignName, deliveryStatus)
 
 		return c.Type("xml").SendString(result.VAST)
 	}
@@ -2095,8 +2526,32 @@ func pipelineHandler(p *pipeline.Pipeline, metrics *monitor.Metrics, s *store) f
 			return c.Type("xml").SendString(result.VAST)
 		}
 
+		campaignID, campaignName, deliveryStatus, allowed := s.reserveCampaignDelivery(&req, result.Winner, result.WinPrice)
+		if !allowed {
+			metrics.RecordNoBid()
+			metrics.AddTrafficEvent(monitor.TrafficEvent{
+				Type:      "delivery_block",
+				RequestID: req.ID,
+				Env:       requestEnvironment(&req),
+				Details:   deliveryStatus,
+				Campaign:  campaignName,
+				Bundle:    requestBundle(&req),
+				ADomain:   winnerPrimaryDomain(result.Winner),
+			})
+			return c.Type("xml").SendString(vast.BuildNoAd())
+		}
+
+		if campaignID > 0 {
+			cm := metrics.GetCampaignMetric(campaignID)
+			cm.Opps.Add(1)
+			cm.Impressions.Add(1)
+			cm.SpendMu.Lock()
+			cm.Spend += result.Winner.ReportingPrice(result.WinPrice) / 1000.0
+			cm.SpendMu.Unlock()
+		}
+
 		// Record ad decision
-		s.recordAdDecision(&req, result.Winner, result.WinPrice, "pipeline", result.AdapterID)
+		s.recordAdDecision(&req, result.Winner, result.WinPrice, "pipeline", result.AdapterID, campaignID, campaignName, deliveryStatus)
 
 		return c.Type("xml").SendString(result.VAST)
 	}
