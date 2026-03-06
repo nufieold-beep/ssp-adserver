@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"ssp/internal/httputil"
 	"ssp/internal/openrtb"
+	"strings"
 )
 
 // ORTBAdapter implements DemandAdapter for OpenRTB 2.5/2.6 DSP endpoints.
@@ -121,19 +122,19 @@ func (a *ORTBAdapter) applyEndpointConfig(req *openrtb.BidRequest) *openrtb.BidR
 	out := *req
 
 	// Merge BAdv: combine request-level + endpoint-level blocked advertisers
-	if len(a.badv) > 0 {
+	if len(req.BAdv) > 0 || len(a.badv) > 0 {
 		merged := make([]string, 0, len(req.BAdv)+len(a.badv))
 		merged = append(merged, req.BAdv...)
 		merged = append(merged, a.badv...)
-		out.BAdv = merged
+		out.BAdv = sanitizeStringList(merged)
 	}
 
 	// Merge BCat: combine request-level + endpoint-level blocked categories
-	if len(a.bcat) > 0 {
+	if len(req.BCat) > 0 || len(a.bcat) > 0 {
 		merged := make([]string, 0, len(req.BCat)+len(a.bcat))
 		merged = append(merged, req.BCat...)
 		merged = append(merged, a.bcat...)
-		out.BCat = merged
+		out.BCat = sanitizeStringList(merged)
 	}
 
 	// Supply chain: remove ext.schain if not enabled for this endpoint
@@ -147,4 +148,39 @@ func (a *ORTBAdapter) applyEndpointConfig(req *openrtb.BidRequest) *openrtb.BidR
 	}
 
 	return &out
+}
+
+func sanitizeStringList(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(in))
+	seen := make(map[string]struct{}, len(in))
+	for _, raw := range in {
+		v := normalizeListToken(raw)
+		if v == "" {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	return out
+}
+
+func normalizeListToken(v string) string {
+	v = strings.TrimSpace(v)
+	for {
+		prev := v
+		v = strings.TrimSpace(v)
+		v = strings.TrimPrefix(v, `\\"`)
+		v = strings.TrimSuffix(v, `\\"`)
+		v = strings.Trim(v, `"'`)
+		if v == prev {
+			break
+		}
+	}
+	return v
 }

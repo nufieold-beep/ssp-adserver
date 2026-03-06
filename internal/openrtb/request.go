@@ -27,7 +27,6 @@ var (
 	defaultCur       = []string{"USD"}
 	defaultMimes     = []string{"video/mp4", "video/webm", "video/ogg", "application/x-mpegURL"}
 	defaultProtocols = []int{2, 3, 5, 6, 7, 8, 11, 12} // VAST 2-4 inline+wrapper
-	defaultPlayback  = []int{1, 2, 6}                  // auto-sound, auto-mute, enter-viewport
 )
 
 var alpha2To3Country = map[string]string{
@@ -106,7 +105,7 @@ type Video struct {
 	Sequence       int      `json:"sequence,omitempty"`
 	BoxingAllowed  int      `json:"boxingallowed"`
 	Placement      int      `json:"placement,omitempty"`
-	PlaybackMethod []int    `json:"playbackmethod,omitempty"`
+	PlaybackMethod []int    `json:"-"`
 	SkipMin        int      `json:"skipmin,omitempty"`
 	SkipAfter      int      `json:"skipafter,omitempty"`
 	StartDelay     *int     `json:"startdelay,omitempty"`
@@ -311,19 +310,18 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 				Secure:      0,
 				TagID:       tagID,
 				Video: &Video{
-					Mimes:          defaultMimes,
-					Linearity:      1,
-					MinDuration:    minDur,
-					MaxDuration:    maxDur,
-					Protocols:      defaultProtocols,
-					W:              w,
-					H:              h,
-					Skip:           skippable,
-					Sequence:       1,
-					BoxingAllowed:  1,
-					Placement:      placement,
-					StartDelay:     &startDelay,
-					PlaybackMethod: defaultPlayback,
+					Mimes:         defaultMimes,
+					Linearity:     1,
+					MinDuration:   minDur,
+					MaxDuration:   maxDur,
+					Protocols:     defaultProtocols,
+					W:             w,
+					H:             h,
+					Skip:          skippable,
+					Sequence:      1,
+					BoxingAllowed: 1,
+					Placement:     placement,
+					StartDelay:    &startDelay,
 				},
 			},
 		},
@@ -429,8 +427,8 @@ func queryIntFallback(c *fiber.Ctx, primary, fallback string, def int) int {
 // detectSUA builds device.sua from user-agent and device hints.
 func detectSUA(ua string, deviceType int, make, os string) *SUA {
 	uaL := strings.ToLower(ua)
-	browserBrand, browserVer := detectBrowserBrandVersion(ua, uaL)
 	platformBrand := detectPlatformBrand(uaL, make, os)
+	browserBrand, browserVer := detectBrowserBrandVersion(ua, uaL, platformBrand, make, os)
 	mobile := detectMobileFlag(uaL, deviceType)
 
 	return &SUA{
@@ -485,13 +483,18 @@ func detectPlatformBrand(uaL, make, os string) string {
 	return "Android"
 }
 
-func detectBrowserBrandVersion(ua, uaL string) (string, string) {
+func detectBrowserBrandVersion(ua, uaL, platformBrand, make, os string) (string, string) {
 	switch {
 	case strings.Contains(uaL, "aft") || strings.Contains(uaL, "fire tv") || strings.Contains(uaL, "amazon"):
 		if v := uaTokenVersion(ua, "Silk/"); v != "" {
 			return "AmazonFireStick", v
 		}
 		return "AmazonFireStick", ""
+	case strings.Contains(uaL, "applecoremedia"):
+		if v := uaTokenVersion(ua, "AppleCoreMedia/"); v != "" {
+			return "AppleTV", v
+		}
+		return "AppleTV", ""
 	case strings.Contains(uaL, "roku"):
 		if v := uaTokenVersion(ua, "Roku/"); v != "" {
 			return "Roku", v
@@ -532,6 +535,27 @@ func detectBrowserBrandVersion(ua, uaL string) (string, string) {
 			}
 			return t.Brand, v
 		}
+	}
+
+	// Fallback heuristics for SDK/app UAs without explicit browser tokens.
+	switch strings.ToLower(platformBrand) {
+	case "tvos", "ios", "macos":
+		return "Safari", ""
+	case "android":
+		if strings.Contains(uaL, "fire") || strings.Contains(strings.ToLower(make), "amazon") {
+			return "AmazonFireStick", ""
+		}
+		return "Chrome", ""
+	case "tizen":
+		return "SamsungTV", ""
+	case "webos":
+		return "LGTV", ""
+	case "roku":
+		return "Roku", ""
+	}
+
+	if strings.EqualFold(strings.TrimSpace(os), "tvOS") {
+		return "Safari", ""
 	}
 
 	return "Unknown", ""
