@@ -79,23 +79,23 @@ type SupplyTag struct {
 }
 
 type DemandEndpoint struct {
-	ID            int      `json:"id"`
-	Name          string   `json:"name"`
-	URL           string   `json:"endpoint_url"`
-	Integration   string   `json:"integration"`
-	OrtbVersion   string   `json:"ortb_version"`
-	AuctionType   string   `json:"auction_type"`
-	Floor         float64  `json:"floor"`
-	Timeout       int      `json:"timeout_ms"`
-	QPS           int      `json:"qps_limit"`
-	Sensitive     bool     `json:"sensitive"`
-	Margin        float64  `json:"margin"`
-	Status        int      `json:"status"`
-	GZIPSupport   bool     `json:"gzip_support"`
-	RemovePChain  bool     `json:"remove_pchain"`
-	BAdv          []string `json:"badv"`
-	BCat          []string `json:"bcat"`
-	SupplyChain   bool     `json:"schain_enabled"`
+	ID           int      `json:"id"`
+	Name         string   `json:"name"`
+	URL          string   `json:"endpoint_url"`
+	Integration  string   `json:"integration"`
+	OrtbVersion  string   `json:"ortb_version"`
+	AuctionType  string   `json:"auction_type"`
+	Floor        float64  `json:"floor"`
+	Timeout      int      `json:"timeout_ms"`
+	QPS          int      `json:"qps_limit"`
+	Sensitive    bool     `json:"sensitive"`
+	Margin       float64  `json:"margin"`
+	Status       int      `json:"status"`
+	GZIPSupport  bool     `json:"gzip_support"`
+	RemovePChain bool     `json:"remove_pchain"`
+	BAdv         []string `json:"badv"`
+	BCat         []string `json:"bcat"`
+	SupplyChain  bool     `json:"schain_enabled"`
 }
 
 type DemandVastTag struct {
@@ -420,6 +420,7 @@ func NewRouterWithDeps(cfg *config.Config, metrics *monitor.Metrics, configPath 
 	// ─── Dashboard ───
 	app.Get("/", func(c *fiber.Ctx) error { return c.SendFile(dashPath) })
 	app.Get("/dashboard", func(c *fiber.Ctx) error { return c.SendFile(dashPath) })
+	app.Get("/favicon.ico", func(c *fiber.Ctx) error { return c.SendStatus(fiber.StatusNoContent) })
 
 	// ─── VAST Serving Endpoint ───
 	if eDeps != nil && eDeps.Pipeline != nil {
@@ -1274,10 +1275,10 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 			}
 			acfg := &adapter.AdapterConfig{
 				ID: adapterID, Name: e.Name,
-				Type:          adapter.AdapterType(e.Integration),
-				Endpoint:      e.URL, TimeoutMs: timeout,
-				Floor:         e.Floor, Margin: e.Margin,
-				QPSLimit:      e.QPS, Status: 1,
+				Type:     adapter.AdapterType(e.Integration),
+				Endpoint: e.URL, TimeoutMs: timeout,
+				Floor: e.Floor, Margin: e.Margin,
+				QPSLimit: e.QPS, Status: 1,
 				GZIPSupport:   e.GZIPSupport,
 				RemovePChain:  e.RemovePChain,
 				SChainEnabled: e.SupplyChain,
@@ -1352,10 +1353,10 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 			}
 			acfg := &adapter.AdapterConfig{
 				ID: adapterID, Name: e.Name,
-				Type:          adapter.AdapterType(e.Integration),
-				Endpoint:      e.URL, TimeoutMs: timeout,
-				Floor:         e.Floor, Margin: e.Margin,
-				QPSLimit:      e.QPS, Status: e.Status,
+				Type:     adapter.AdapterType(e.Integration),
+				Endpoint: e.URL, TimeoutMs: timeout,
+				Floor: e.Floor, Margin: e.Margin,
+				QPSLimit: e.QPS, Status: e.Status,
 				GZIPSupport:   e.GZIPSupport,
 				RemovePChain:  e.RemovePChain,
 				SChainEnabled: e.SupplyChain,
