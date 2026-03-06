@@ -32,10 +32,12 @@ type Bid struct {
 	DealID  string   `json:"dealid,omitempty"`
 	W       int      `json:"w,omitempty"`
 	H       int      `json:"h,omitempty"`
-	Attr    []int    `json:"attr,omitempty"`   // Creative attributes
-	MType   any      `json:"mtype,omitempty"`  // OpenRTB 2.6: Creative markup type
-	AdvID   string   `json:"adv_id,omitempty"` // Advertiser ID for quality checks
-	Seat    string   `json:"-"`                // Populated from SeatBid.Seat during validation
+	Attr     []int    `json:"attr,omitempty"`   // Creative attributes
+	MType    any      `json:"mtype,omitempty"`  // OpenRTB 2.6: Creative markup type
+	AdvID    string   `json:"adv_id,omitempty"` // Advertiser ID for quality checks
+	Seat     string   `json:"-"`                // Populated from SeatBid.Seat
+	WinPrice float64  `json:"-"`                // Added internally for macro sub
+	Margin   float64  `json:"-"`                // Margin applied (so we can reverse it for DSP gross)
 }
 
 // SubstituteMacros replaces OpenRTB auction macros in a URL.
@@ -43,8 +45,17 @@ func (b *Bid) SubstituteMacros(url string) string {
 	if url == "" {
 		return ""
 	}
+
+	clearPrice := b.WinPrice
+	if clearPrice == 0 {
+		clearPrice = b.Price
+	}
+	if b.Margin > 0 && b.Margin < 1 {
+		clearPrice = clearPrice / (1 - b.Margin)
+	}
+
 	price := strings.NewReplacer(
-		"${AUCTION_PRICE}", formatPrice(b.Price),
+		"${AUCTION_PRICE}", formatPrice(clearPrice),
 		"${AUCTION_ID}", b.ID,
 		"${AUCTION_BID_ID}", b.ID,
 		"${AUCTION_IMP_ID}", b.ImpID,

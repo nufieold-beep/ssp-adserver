@@ -61,7 +61,7 @@ func Run(bids []openrtb.Bid, floor float64, auctionType string) *AuctionResult {
 	default: // first_price
 		result.WinPrice = result.Winner.Price
 	}
-
+	result.Winner.WinPrice = result.WinPrice
 	// Collect losers
 	for i, bid := range valid {
 		if i != winnerIdx {

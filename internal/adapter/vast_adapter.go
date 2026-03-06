@@ -70,11 +70,12 @@ func (a *VASTAdapter) RequestBids(ctx context.Context, req *openrtb.BidRequest) 
 	}
 
 	bid := openrtb.Bid{
-		ID:    "vast-" + a.id,
-		ImpID: "1",
-		Price: price,
-		Adm:   adm,
-		MType: "CREATIVE_MARKUP_VIDEO",
+		ID:     "vast-" + a.id,
+		ImpID:  "1",
+		Price:  price,
+		Margin: a.margin,
+		Adm:    adm,
+		MType:  "CREATIVE_MARKUP_VIDEO",
 	}
 
 	return &BidResult{AdapterID: a.id, Bids: []openrtb.Bid{bid}}, nil

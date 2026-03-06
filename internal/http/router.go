@@ -509,9 +509,6 @@ func vastHandler(mgr *bidder.Manager, metrics *monitor.Metrics, s *store, auctio
 			return c.Status(500).JSON(fiber.Map{"error": "Failed to build VAST"})
 		}
 
-		// Fire burl (billing URL) — billable impression event
-		auction.FireBillingNotice(winner)
-
 		// Record win metrics
 		metrics.RecordImpression()
 		metrics.RecordWin(result.WinPrice)

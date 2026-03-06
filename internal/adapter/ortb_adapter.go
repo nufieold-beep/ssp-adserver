@@ -83,6 +83,7 @@ func (a *ORTBAdapter) RequestBids(ctx context.Context, req *openrtb.BidRequest) 
 	// Apply margin
 	if a.margin > 0 {
 		for i := range valid {
+			valid[i].Margin = a.margin
 			valid[i].Price *= (1 - a.margin)
 		}
 	}
