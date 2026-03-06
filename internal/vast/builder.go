@@ -44,9 +44,9 @@ func DetectAdmType(adm string) AdmType {
 }
 
 // Build creates a VAST 3.0 XML response from a winning bid.
+// baseURL is the publicly-reachable origin (e.g. "https://ads1.viadsmedia.com").
 // Auto-detects the Adm content type and generates InLine, Wrapper,
 // or passthrough VAST accordingly, always injecting SSP tracking pixels.
-// baseURL is the publicly-reachable origin (e.g. from the HTTP request).
 func Build(bid *openrtb.Bid, requestID, baseURL string) string {
 	if baseURL == "" {
 		baseURL = BaseURL

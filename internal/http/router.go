@@ -1462,11 +1462,10 @@ func supplyTagVastHandler(p *pipeline.Pipeline, metrics *monitor.Metrics, s *sto
 		// If mappings exist, only those demand sources are called.
 		// If no mappings, fan out to all active adapters (backward compat).
 		var result *pipeline.Result
-		p.BaseURL = c.BaseURL()
 		if len(mappedAdapterIDs) > 0 {
-			result = p.Execute(c.Context(), &req, mappedAdapterIDs)
+			result = p.Execute(c.Context(), &req, c.BaseURL(), mappedAdapterIDs)
 		} else {
-			result = p.Execute(c.Context(), &req)
+			result = p.Execute(c.Context(), &req, c.BaseURL())
 		}
 
 		if result.Error != nil {
@@ -1510,8 +1509,7 @@ func pipelineHandler(p *pipeline.Pipeline, metrics *monitor.Metrics, s *store) f
 			return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 		}
 
-		p.BaseURL = c.BaseURL()
-		result := p.Execute(c.Context(), &req)
+		result := p.Execute(c.Context(), &req, c.BaseURL())
 
 		if result.Error != nil {
 			metrics.RecordError()
