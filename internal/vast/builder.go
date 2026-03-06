@@ -1,7 +1,6 @@
 package vast
 
 import (
-	"fmt"
 	"html"
 	"net/url"
 	"path"
@@ -119,7 +118,9 @@ func deviceEnv(dt int) string {
 
 // writeImpressionTag appends a single <Impression> CDATA element.
 func writeImpressionTag(sb *strings.Builder, pixelURL string) {
-	fmt.Fprintf(sb, "   <Impression><![CDATA[%s]]></Impression>\n", pixelURL)
+	sb.WriteString("   <Impression><![CDATA[")
+	sb.WriteString(pixelURL)
+	sb.WriteString("]]></Impression>\n")
 }
 
 // dspNoticePixels appends NURL and BURL as <Impression> tags with macros resolved.
@@ -132,6 +133,17 @@ func dspNoticePixels(sb *strings.Builder, bid *openrtb.Bid) {
 	}
 }
 
+// Pre-allocated tracking event definitions — shared across all requests.
+var trackingEvents = [...]struct{ name, path string }{
+	{"creativeView", "/start"},
+	{"start", "/start"},
+	{"firstQuartile", "/firstQuartile"},
+	{"midpoint", "/midpoint"},
+	{"thirdQuartile", "/thirdQuartile"},
+	{"complete", "/complete"},
+	{"skip", "/skip"},
+}
+
 // trackingEventsBlock returns the <TrackingEvents> XML with SSP event pixels.
 func trackingEventsBlock(evtBase string, bid *openrtb.Bid) string {
 	var sb strings.Builder
@@ -139,22 +151,16 @@ func trackingEventsBlock(evtBase string, bid *openrtb.Bid) string {
 
 	qs := url.Values{"bid": {bid.ID}, "crid": {bid.CrID}, "cmp": {bid.Seat}}.Encode()
 
-	events := []struct {
-		name string
-		path string
-	}{
-		{"creativeView", "/start"},
-		{"start", "/start"},
-		{"firstQuartile", "/firstQuartile"},
-		{"midpoint", "/midpoint"},
-		{"thirdQuartile", "/thirdQuartile"},
-		{"complete", "/complete"},
-		{"skip", "/skip"},
-	}
-
 	sb.WriteString("      <TrackingEvents>\n")
-	for _, e := range events {
-		fmt.Fprintf(&sb, "       <Tracking event=\"%s\"><![CDATA[%s%s?%s]]></Tracking>\n", e.name, evtBase, e.path, qs)
+	for _, e := range trackingEvents {
+		sb.WriteString("       <Tracking event=\"")
+		sb.WriteString(e.name)
+		sb.WriteString("\"><![CDATA[")
+		sb.WriteString(evtBase)
+		sb.WriteString(e.path)
+		sb.WriteByte('?')
+		sb.WriteString(qs)
+		sb.WriteString("]]></Tracking>\n")
 	}
 	sb.WriteString("      </TrackingEvents>\n")
 
@@ -251,25 +257,45 @@ func buildInline(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) stri
 	crID := html.EscapeString(bid.CrID)
 	admURL := resolveAdm(bid)
 
-	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+	var sb strings.Builder
+	sb.Grow(2048)
+	sb.WriteString(`<?xml version="1.0" encoding="UTF-8"?>
 <VAST version="3.0">
- <Ad id="%s">
+ <Ad id="`)
+	sb.WriteString(bidID)
+	sb.WriteString(`">
   <InLine>
    <AdSystem>viadsmedia SSP</AdSystem>
-   <AdTitle>Ad %s</AdTitle>
-%s   <Creatives>
-    <Creative id="%s">
+   <AdTitle>Ad `)
+	sb.WriteString(bidID)
+	sb.WriteString("</AdTitle>\n")
+	sb.WriteString(impressions)
+	sb.WriteString(`   <Creatives>
+    <Creative id="`)
+	sb.WriteString(crID)
+	sb.WriteString(`">
      <Linear>
       <Duration>00:00:30</Duration>
-%s      <MediaFiles>
-       <MediaFile type="%s" width="%d" height="%d" delivery="progressive" bitrate="2000"><![CDATA[%s]]></MediaFile>
+`)
+	sb.WriteString(tracking)
+	sb.WriteString(`      <MediaFiles>
+       <MediaFile type="`)
+	sb.WriteString(mimeFromURL(admURL))
+	sb.WriteString(`" width="`)
+	sb.WriteString(strconv.Itoa(w))
+	sb.WriteString(`" height="`)
+	sb.WriteString(strconv.Itoa(h))
+	sb.WriteString(`" delivery="progressive" bitrate="2000"><![CDATA[`)
+	sb.WriteString(admURL)
+	sb.WriteString(`]]></MediaFile>
       </MediaFiles>
      </Linear>
     </Creative>
    </Creatives>
   </InLine>
  </Ad>
-</VAST>`, bidID, bidID, impressions, crID, tracking, mimeFromURL(admURL), w, h, admURL)
+</VAST>`)
+	return sb.String()
 }
 
 // buildWrapper creates a VAST Wrapper that redirects to the DSP's VAST tag URL.
@@ -280,21 +306,31 @@ func buildWrapper(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) str
 	bidID := html.EscapeString(bid.ID)
 	admURL := resolveAdm(bid)
 
-	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+	var sb strings.Builder
+	sb.Grow(1536)
+	sb.WriteString(`<?xml version="1.0" encoding="UTF-8"?>
 <VAST version="3.0">
- <Ad id="%s">
+ <Ad id="`)
+	sb.WriteString(bidID)
+	sb.WriteString(`">
   <Wrapper>
    <AdSystem>viadsmedia SSP</AdSystem>
-   <VASTAdTagURI><![CDATA[%s]]></VASTAdTagURI>
-%s   <Creatives>
+   <VASTAdTagURI><![CDATA[`)
+	sb.WriteString(admURL)
+	sb.WriteString("]]></VASTAdTagURI>\n")
+	sb.WriteString(impressions)
+	sb.WriteString(`   <Creatives>
     <Creative>
      <Linear>
-%s     </Linear>
+`)
+	sb.WriteString(tracking)
+	sb.WriteString(`     </Linear>
     </Creative>
    </Creatives>
   </Wrapper>
  </Ad>
-</VAST>`, bidID, admURL, impressions, tracking)
+</VAST>`)
+	return sb.String()
 }
 
 // buildPassthrough takes a complete VAST XML document from the DSP and

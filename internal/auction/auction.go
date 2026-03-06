@@ -1,6 +1,7 @@
 package auction
 
 import (
+	"io"
 	"log"
 	"ssp/internal/httputil"
 	"ssp/internal/openrtb"
@@ -116,5 +117,7 @@ func fireURL(url string) {
 		log.Printf("notice fire failed: %v", err)
 		return
 	}
+	// Drain and close body to allow TCP connection reuse
+	io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
 }

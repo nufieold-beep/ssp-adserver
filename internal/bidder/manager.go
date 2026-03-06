@@ -10,6 +10,10 @@ import (
 type ManagedBidder struct {
 	Bidder
 	Config *config.AdapterConfig
+	// Pre-compiled targeting sets for O(1) lookups (lazy init)
+	geoSet  map[string]bool
+	osSet   map[string]bool
+	bcatSet map[string]bool
 }
 
 type Manager struct {
@@ -85,46 +89,47 @@ func (mb *ManagedBidder) validateTargeting(req openrtb.BidRequest) bool {
 		return true // pass-through
 	}
 
-	// Geolocation blocking / Allowing
+	// Geolocation blocking / Allowing — O(1) map lookup
 	if len(mb.Config.TargetGeos) > 0 && req.Device.Geo != nil && req.Device.Geo.Country != "" {
-		matchGeo := false
-		for _, geo := range mb.Config.TargetGeos {
-			if strings.EqualFold(geo, req.Device.Geo.Country) {
-				matchGeo = true
-				break
-			}
+		if mb.geoSet == nil {
+			mb.geoSet = buildStringSet(mb.Config.TargetGeos)
 		}
-		if !matchGeo {
+		if !mb.geoSet[strings.ToUpper(req.Device.Geo.Country)] {
 			return false
 		}
 	}
 
-	// OS Targeting
+	// OS Targeting — O(1) map lookup
 	if len(mb.Config.TargetOS) > 0 && req.Device.OS != "" {
-		matchOS := false
-		for _, os := range mb.Config.TargetOS {
-			if strings.EqualFold(os, req.Device.OS) {
-				matchOS = true
-				break
-			}
+		if mb.osSet == nil {
+			mb.osSet = buildStringSet(mb.Config.TargetOS)
 		}
-		if !matchOS {
+		if !mb.osSet[strings.ToUpper(req.Device.OS)] {
 			return false
 		}
 	}
 
 	// Bcat Blocking (Blocked Categories)
 	if len(mb.Config.BlockedBcat) > 0 && len(req.BCat) > 0 {
-		for _, blocked := range mb.Config.BlockedBcat {
-			for _, reqCat := range req.BCat {
-				if strings.EqualFold(blocked, reqCat) {
-					return false // Request is offering a blocked category
-				}
+		if mb.bcatSet == nil {
+			mb.bcatSet = buildStringSet(mb.Config.BlockedBcat)
+		}
+		for _, reqCat := range req.BCat {
+			if mb.bcatSet[strings.ToUpper(reqCat)] {
+				return false
 			}
 		}
 	}
 
 	return true
+}
+
+func buildStringSet(items []string) map[string]bool {
+	m := make(map[string]bool, len(items))
+	for _, s := range items {
+		m[strings.ToUpper(s)] = true
+	}
+	return m
 }
 
 func (m *Manager) CallAll(req openrtb.BidRequest) []openrtb.Bid {

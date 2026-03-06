@@ -33,11 +33,15 @@ type Metrics struct {
 	BidWins     atomic.Int64
 	BidLosses   atomic.Int64
 	WinPricesMu sync.Mutex
-	WinPrices   []float64
+	WinPrices   [1000]float64
+	wpIdx       int
+	wpCount     int
 
 	// Bid latency tracking (milliseconds)
 	BidLatenciesMu sync.Mutex
-	BidLatencies   []float64
+	BidLatencies   [1000]float64
+	blIdx          int
+	blCount        int
 
 	// Per-campaign metrics
 	CampaignMetrics sync.Map // map[int]*CampaignMetric
@@ -108,9 +112,10 @@ func (m *Metrics) RecordSpend(cpm float64) {
 func (m *Metrics) RecordWin(price float64) {
 	m.BidWins.Add(1)
 	m.WinPricesMu.Lock()
-	m.WinPrices = append(m.WinPrices, price)
-	if len(m.WinPrices) > 1000 {
-		m.WinPrices = m.WinPrices[len(m.WinPrices)-1000:]
+	m.WinPrices[m.wpIdx] = price
+	m.wpIdx = (m.wpIdx + 1) % len(m.WinPrices)
+	if m.wpCount < len(m.WinPrices) {
+		m.wpCount++
 	}
 	m.WinPricesMu.Unlock()
 }
@@ -119,9 +124,10 @@ func (m *Metrics) RecordLoss() { m.BidLosses.Add(1) }
 
 func (m *Metrics) RecordBidLatency(ms float64) {
 	m.BidLatenciesMu.Lock()
-	m.BidLatencies = append(m.BidLatencies, ms)
-	if len(m.BidLatencies) > 1000 {
-		m.BidLatencies = m.BidLatencies[len(m.BidLatencies)-1000:]
+	m.BidLatencies[m.blIdx] = ms
+	m.blIdx = (m.blIdx + 1) % len(m.BidLatencies)
+	if m.blCount < len(m.BidLatencies) {
+		m.blCount++
 	}
 	m.BidLatenciesMu.Unlock()
 }
@@ -129,14 +135,14 @@ func (m *Metrics) RecordBidLatency(ms float64) {
 func (m *Metrics) AvgBidLatency() float64 {
 	m.BidLatenciesMu.Lock()
 	defer m.BidLatenciesMu.Unlock()
-	if len(m.BidLatencies) == 0 {
+	if m.blCount == 0 {
 		return 0
 	}
 	var sum float64
-	for _, v := range m.BidLatencies {
-		sum += v
+	for i := 0; i < m.blCount; i++ {
+		sum += m.BidLatencies[i]
 	}
-	return sum / float64(len(m.BidLatencies))
+	return sum / float64(m.blCount)
 }
 
 func (m *Metrics) AddTrafficEvent(evt TrafficEvent) {

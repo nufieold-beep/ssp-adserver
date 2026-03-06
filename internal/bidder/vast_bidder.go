@@ -1,11 +1,11 @@
 package bidder
 
 import (
-	"fmt"
 	"net/http"
 	"net/url"
 	"ssp/internal/httputil"
 	"ssp/internal/openrtb"
+	"strconv"
 	"time"
 )
 
@@ -50,6 +50,11 @@ func (b *VASTBidder) enrichTagURL(req openrtb.BidRequest) string {
 			q.Set(key, val)
 		}
 	}
+	setInt := func(key string, val int) {
+		if q.Get(key) == "" {
+			q.Set(key, strconv.Itoa(val))
+		}
+	}
 
 	// Device signals
 	set("ip", req.Device.IP)
@@ -58,9 +63,9 @@ func (b *VASTBidder) enrichTagURL(req openrtb.BidRequest) string {
 	set("os", req.Device.OS)
 	set("make", req.Device.Make)
 	set("model", req.Device.Model)
-	set("devicetype", fmt.Sprintf("%d", req.Device.DeviceType))
-	set("dnt", fmt.Sprintf("%d", req.Device.DNT))
-	set("lmt", fmt.Sprintf("%d", req.Device.LMT))
+	setInt("devicetype", req.Device.DeviceType)
+	setInt("dnt", req.Device.DNT)
+	setInt("lmt", req.Device.LMT)
 	set("lang", req.Device.Language)
 
 	// Geo
@@ -78,10 +83,10 @@ func (b *VASTBidder) enrichTagURL(req openrtb.BidRequest) string {
 	// Video dimensions & duration
 	if len(req.Imp) > 0 && req.Imp[0].Video != nil {
 		v := req.Imp[0].Video
-		set("w", fmt.Sprintf("%d", v.W))
-		set("h", fmt.Sprintf("%d", v.H))
-		set("minduration", fmt.Sprintf("%d", v.MinDuration))
-		set("maxduration", fmt.Sprintf("%d", v.MaxDuration))
+		setInt("w", v.W)
+		setInt("h", v.H)
+		setInt("minduration", v.MinDuration)
+		setInt("maxduration", v.MaxDuration)
 	}
 
 	u.RawQuery = q.Encode()
@@ -117,7 +122,7 @@ func (b *VASTBidder) Request(req openrtb.BidRequest) ([]openrtb.Bid, error) {
 		ImpID: impID,
 		Price: b.cpm,
 		Adm:   adm,
-		MType: "CREATIVE_MARKUP_VIDEO",
+		MType: 2,
 	}
 
 	return []openrtb.Bid{bid}, nil

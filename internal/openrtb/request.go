@@ -9,7 +9,7 @@ import (
 )
 
 // RequestDefaults controls generated OpenRTB request defaults.
-// It can be configured at startup via ConfigureRequestDefaults.
+// Configured at startup via ConfigureRequestDefaults.
 type RequestDefaults struct {
 	BidFloor float64
 	MinDur   int
@@ -21,6 +21,15 @@ var requestDefaults = RequestDefaults{
 	MinDur:   5,
 	MaxDur:   30,
 }
+
+// Pre-allocated shared slices for BuildFromHTTP — avoids heap allocation per request.
+var (
+	defaultCur       = []string{"USD"}
+	defaultMimes     = []string{"video/mp4", "video/webm", "video/ogg", "application/x-mpegURL"}
+	defaultProtocols = []int{2, 3, 5, 6, 7, 8, 11, 12} // VAST 2-4 inline+wrapper
+	defaultAPI       = []int{1, 2, 7}                    // VPAID 1, VPAID 2, OMID 1
+	defaultPlayback  = []int{1, 2, 6}                    // auto-sound, auto-mute, enter-viewport
+)
 
 var alpha2To3Country = map[string]string{
 	"US": "USA", "GB": "GBR", "CA": "CAN", "AU": "AUS", "DE": "DEU",
@@ -127,13 +136,13 @@ type App struct {
 }
 
 type Content struct {
-	ID       string   `json:"id,omitempty"`
-	Title    string   `json:"title,omitempty"`
-	Genre    string   `json:"genre,omitempty"`
-	Cat      []string `json:"cat,omitempty"`
-	Language string   `json:"language,omitempty"`
-	Len      int      `json:"len,omitempty"` // Content length in seconds
-	LiveStream int    `json:"livestream,omitempty"`
+	ID         string   `json:"id,omitempty"`
+	Title      string   `json:"title,omitempty"`
+	Genre      string   `json:"genre,omitempty"`
+	Cat        []string `json:"cat,omitempty"`
+	Language   string   `json:"language,omitempty"`
+	Len        int      `json:"len,omitempty"`
+	LiveStream int      `json:"livestream,omitempty"`
 }
 
 type Site struct {
@@ -149,9 +158,9 @@ type Geo struct {
 	Metro     string  `json:"metro,omitempty"`
 	City      string  `json:"city,omitempty"`
 	Zip       string  `json:"zip,omitempty"`
-	Type      int     `json:"type,omitempty"` // 1=GPS, 2=IP
+	Type      int     `json:"type,omitempty"`
 	Accuracy  int     `json:"accuracy,omitempty"`
-	IPService int     `json:"ipservice,omitempty"` // 3=MaxMind
+	IPService int     `json:"ipservice,omitempty"`
 }
 
 type Device struct {
@@ -165,7 +174,7 @@ type Device struct {
 	OS             string     `json:"os,omitempty"`
 	OSv            string     `json:"osv,omitempty"`
 	JS             int        `json:"js"`
-	DeviceType     int        `json:"devicetype,omitempty"` // 3=CTV, 7=set-top-box
+	DeviceType     int        `json:"devicetype,omitempty"`
 	IFA            string     `json:"ifa,omitempty"`
 	LMT            int        `json:"lmt"`
 	W              int        `json:"w,omitempty"`
@@ -188,7 +197,7 @@ type User struct {
 }
 
 type UserExt struct {
-	Consent string `json:"consent,omitempty"` // GDPR consent string
+	Consent string `json:"consent,omitempty"`
 }
 
 type Regs struct {
@@ -198,7 +207,7 @@ type Regs struct {
 
 type RegsExt struct {
 	GDPR   int    `json:"gdpr,omitempty"`
-	USPriv string `json:"us_privacy,omitempty"` // CCPA string
+	USPriv string `json:"us_privacy,omitempty"`
 }
 
 type SChain struct {
@@ -220,18 +229,23 @@ type ReqExt struct {
 	SChain *SChain `json:"schain,omitempty"`
 }
 
+// defaultSChain is shared across all requests (immutable).
+var defaultSChain = &ReqExt{
+	SChain: &SChain{
+		Complete: 1,
+		Ver:      "1.0",
+		Nodes: []SChainNode{
+			{ASI: "viadsmedia.com", SID: "pub-001", HP: 1},
+		},
+	},
+}
+
 // BuildFromHTTP constructs a CTV/in-app video BidRequest from query params.
-//
-//	/api/vast?sid=1211&w=1920&h=1080&ip=...&ua=...&app_bundle=...
-//	         &app_name=...&app_store_url=...&country_code=US&max_dur=60
-//	         &min_dur=3&device_make=...&device_model=...&device_type=3
-//	         &ct_genre=game,entertainment&dnt=0&ifa=...&os=...
-//	         &us_privacy=1---&lmt=0
 func BuildFromHTTP(c *fiber.Ctx) BidRequest {
-	w, _ := strconv.Atoi(c.Query("w", "1920"))
-	h, _ := strconv.Atoi(c.Query("h", "1080"))
-	minDur, _ := strconv.Atoi(c.Query("min_dur", c.Query("minduration", strconv.Itoa(requestDefaults.MinDur))))
-	maxDur, _ := strconv.Atoi(c.Query("max_dur", c.Query("maxduration", strconv.Itoa(requestDefaults.MaxDur))))
+	w := queryInt(c, "w", 1920)
+	h := queryInt(c, "h", 1080)
+	minDur := queryIntFallback(c, "min_dur", "minduration", requestDefaults.MinDur)
+	maxDur := queryIntFallback(c, "max_dur", "maxduration", requestDefaults.MaxDur)
 
 	skippable := 0
 	if c.Query("skip") == "1" {
@@ -240,14 +254,14 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 
 	tagID := c.Query("sid", c.Query("tagid", c.Params("tag")))
 
-	deviceType := 3
+	deviceType := 3 // CTV default
 	if dt := c.Query("device_type", c.Query("devicetype")); dt != "" {
 		deviceType, _ = strconv.Atoi(dt)
 	}
 	language := c.Query("ct_lang", c.Query("lang", "en"))
 
-	dnt, _ := strconv.Atoi(c.Query("dnt", "0"))
-	lmt, _ := strconv.Atoi(c.Query("lmt", "0"))
+	dnt := queryInt(c, "dnt", 0)
+	lmt := queryInt(c, "lmt", 0)
 	ip := c.Query("ip", c.Query("uip", c.IP()))
 	ua := c.Query("ua", c.Get("User-Agent"))
 	ifa := c.Query("ifa")
@@ -255,46 +269,35 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 	deviceOS := c.Query("os")
 	deviceMake := c.Query("device_make")
 
-	reqID := uuid.New().String()
+	reqID := uuid.NewString()
 
-	// Country: accept alpha-2 or alpha-3
 	country := c.Query("country_code", c.Query("country"))
 	if len(country) == 2 {
 		country = ToAlpha3(country)
 	}
 
-	// StartDelay: 0=pre-roll (default), >0=mid-roll, -1=generic mid, -2=generic post
-	startDelay := 0
-	if sd := c.Query("startdelay"); sd != "" {
-		startDelay, _ = strconv.Atoi(sd)
-	}
-
-	// Placement: 1=in-stream (default for CTV)
-	placement := 1
-	if pl := c.Query("placement"); pl != "" {
-		placement, _ = strconv.Atoi(pl)
-	}
+	startDelay := queryInt(c, "startdelay", 0)
+	placement := queryInt(c, "placement", 1)
 
 	req := BidRequest{
 		ID:      reqID,
 		TMax:    800,
 		At:      1,
 		AllImps: 1,
-		Cur:     []string{"USD"},
+		Cur:     defaultCur,
 		Imp: []Imp{
 			{
 				ID:          reqID,
 				BidFloor:    requestDefaults.BidFloor,
 				BidFloorCur: "USD",
 				Secure:      1,
-				Instl:       0,
 				TagID:       tagID,
 				Video: &Video{
-					Mimes:          []string{"video/mp4", "video/webm", "video/ogg", "application/x-mpegURL"},
+					Mimes:          defaultMimes,
 					Linearity:      1,
 					MinDuration:    minDur,
 					MaxDuration:    maxDur,
-					Protocols:      []int{2, 3, 5, 6, 7, 8, 11, 12},
+					Protocols:      defaultProtocols,
 					W:              w,
 					H:              h,
 					Skip:           skippable,
@@ -302,8 +305,8 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 					BoxingAllowed:  1,
 					Placement:      placement,
 					StartDelay:     &startDelay,
-					API:            []int{1, 2, 7},
-					PlaybackMethod: []int{1, 2, 6},
+					API:            defaultAPI,
+					PlaybackMethod: defaultPlayback,
 					MaxExtended:    -1,
 				},
 			},
@@ -324,7 +327,6 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 			Model:      c.Query("device_model"),
 			OS:         deviceOS,
 			OSv:        c.Query("osv"),
-			JS:         0,
 			DeviceType: deviceType,
 			IFA:        ifa,
 			LMT:        lmt,
@@ -333,38 +335,29 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 			Language:   language,
 		},
 		Regs: &Regs{
-			COPPA: 0,
-			Ext:   &RegsExt{GDPR: 0, USPriv: c.Query("us_privacy", "1---")},
+			Ext: &RegsExt{USPriv: c.Query("us_privacy", "1---")},
 		},
+		Ext: defaultSChain,
 	}
 
-	// IFA type detection
 	if ifaType := detectIFAType(ua, deviceMake, deviceOS); ifaType != "" {
 		req.Device.Ext = &DeviceExt{IFAType: ifaType}
 	}
 
-	// User
 	if ifa != "" {
-		req.User = &User{ID: ifa, Ext: &UserExt{Consent: ""}}
+		req.User = &User{ID: ifa, Ext: &UserExt{}}
 	}
 
-	// Connection type
 	if ct := c.Query("connectiontype"); ct != "" {
 		req.Device.ConnectionType, _ = strconv.Atoi(ct)
 	}
 
-	// Content categories + Content object
-	if ctGenre := c.Query("ct_genre"); ctGenre != "" && req.App != nil {
+	if ctGenre := c.Query("ct_genre"); ctGenre != "" {
 		cats := strings.Split(ctGenre, ",")
 		req.App.Cat = cats
-		req.App.Content = &Content{
-			Genre:    ctGenre,
-			Cat:      cats,
-			Language: language,
-		}
+		req.App.Content = &Content{Genre: ctGenre, Cat: cats, Language: language}
 	}
 
-	// Privacy overrides
 	if coppa := c.Query("coppa"); coppa != "" {
 		req.Regs.COPPA, _ = strconv.Atoi(coppa)
 	}
@@ -372,18 +365,35 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 		req.Regs.Ext.GDPR, _ = strconv.Atoi(gdpr)
 	}
 
-	// Supply chain
-	req.Ext = &ReqExt{
-		SChain: &SChain{
-			Complete: 1,
-			Ver:      "1.0",
-			Nodes: []SChainNode{
-				{ASI: "viadsmedia.com", SID: "pub-001", HP: 1},
-			},
-		},
-	}
-
 	return req
+}
+
+// queryInt parses a query param as int with a default.
+func queryInt(c *fiber.Ctx, key string, def int) int {
+	v := c.Query(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return def
+	}
+	return n
+}
+
+// queryIntFallback tries primary key, then fallback key, then default.
+func queryIntFallback(c *fiber.Ctx, primary, fallback string, def int) int {
+	if v := c.Query(primary); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	if v := c.Query(fallback); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
 }
 
 // detectIFAType returns the IFA type based on device OS, make, and user-agent.

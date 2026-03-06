@@ -24,7 +24,7 @@ type ORTBAdapter struct {
 func NewORTBAdapter(cfg *AdapterConfig) *ORTBAdapter {
 	t := time.Duration(cfg.TimeoutMs) * time.Millisecond
 	if t == 0 {
-		t = 200 * time.Millisecond
+		t = 800 * time.Millisecond
 	}
 	return &ORTBAdapter{
 		id: cfg.ID, name: cfg.Name, endpoint: cfg.Endpoint,

@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"crypto/tls"
-	"html"
 	"io"
 	"net"
 	"net/http"
@@ -53,8 +52,7 @@ func ReadResponseBody(resp *http.Response) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	unescaped := html.UnescapeString(string(body))
-	return []byte(unescaped), nil
+	return body, nil
 }
 
 // ResponseBodyReader returns an io.Reader for the response body that handles
