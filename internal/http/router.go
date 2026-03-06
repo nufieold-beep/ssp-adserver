@@ -287,16 +287,17 @@ func enrichFromSupplyTag(req *openrtb.BidRequest, tag *SupplyTag) {
 			req.Device.Geo = &openrtb.Geo{Country: cc, Type: 2}
 		}
 	}
-	// App fields from supply tag config (tag config is source of truth)
+	// App fields: runtime values from the publisher's request take priority.
+	// Supply tag config is used as a fallback when the publisher didn't send a value.
 	if req.App != nil {
-		if tag.AppBundle != "" {
+		if tag.AppBundle != "" && req.App.Bundle == "" {
 			req.App.Bundle = tag.AppBundle
 			req.App.ID = tag.AppBundle
 		}
-		if tag.AppName != "" {
+		if tag.AppName != "" && req.App.Name == "" {
 			req.App.Name = tag.AppName
 		}
-		if tag.Domain != "" {
+		if tag.Domain != "" && req.App.StoreURL == "" {
 			req.App.StoreURL = tag.Domain
 		}
 		if tag.ContentGenre != "" {
