@@ -129,6 +129,11 @@ func impressionBlock(evtBase string, bid *openrtb.Bid, req *openrtb.BidRequest) 
 
 	fmt.Fprintf(&sb, "   <Impression><![CDATA[%s]]></Impression>\n", trackingURL)
 
+	if bid.NURL != "" {
+		nurl := bid.SubstituteMacros(bid.NURL)
+		fmt.Fprintf(&sb, "   <Impression><![CDATA[%s]]></Impression>\n", nurl)
+	}
+
 	if bid.BURL != "" {
 		burl := bid.SubstituteMacros(bid.BURL)
 		fmt.Fprintf(&sb, "   <Impression><![CDATA[%s]]></Impression>\n", burl)
