@@ -65,6 +65,10 @@ func main() {
 			QPSLimit:    ac.QPSLimit,
 			AuctionType: ac.AuctionType,
 			Status:      ac.Status,
+                        TargetGeos:  ac.TargetGeos,
+                        TargetOS:    ac.TargetOS,
+                        BlockedBcat: ac.BlockedBcat,
+                        AllowedMime: ac.AllowedMime,
 		}
 		switch adapter.AdapterType(ac.Type) {
 		case adapter.TypeORTB:

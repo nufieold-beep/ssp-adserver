@@ -1,6 +1,7 @@
 package adapter
 
 import (
+"strings"
 	"context"
 	"ssp/internal/openrtb"
 	"sync"
@@ -54,6 +55,10 @@ type AdapterConfig struct {
 	QPSLimit    int         `yaml:"qps_limit" json:"qps_limit"` // 0 = unlimited
 	AuctionType string      `yaml:"auction_type" json:"auction_type"`
 	Status      int         `yaml:"status" json:"status"` // 1=active
+        TargetGeos  []string
+        TargetOS    []string
+        BlockedBcat []string
+        AllowedMime []string
 }
 
 // Registry manages all demand adapters with hot-reload capability.
@@ -124,7 +129,8 @@ func (r *Registry) GetActive(req *openrtb.BidRequest) []DemandAdapter {
 		if cfg.Status != 1 {
 			continue
 		}
-		if !adapter.Supports(req) {
+		if !validateTargetingOptions(cfg, req) { continue }
+                if !adapter.Supports(req) {
 			continue
 		}
 		if tracker, ok := r.qps[id]; ok && !tracker.Allow() {
@@ -304,4 +310,46 @@ func (r *Registry) List() []AdapterInfo {
 		out = append(out, info)
 	}
 	return out
+}
+
+
+// validateTargetingOptions ensures request matches specific target criteria (TargetGeos, TargetOS, BlockedBcat)
+func validateTargetingOptions(cfg *AdapterConfig, req *openrtb.BidRequest) bool {
+if cfg == nil { return true }
+
+// Geo targeting
+if len(cfg.TargetGeos) > 0 && req.Device.Geo != nil && req.Device.Geo.Country != "" {
+match := false
+for _, g := range cfg.TargetGeos {
+if strings.EqualFold(g, req.Device.Geo.Country) {
+match = true
+break
+}
+}
+if !match { return false }
+}
+
+// OS targeting
+if len(cfg.TargetOS) > 0 && req.Device.OS != "" {
+match := false
+for _, o := range cfg.TargetOS {
+if strings.EqualFold(o, req.Device.OS) {
+match = true
+break
+}
+}
+if !match { return false }
+}
+
+// Bcat blocking
+if len(cfg.BlockedBcat) > 0 && len(req.BCat) > 0 {
+for _, blocked := range cfg.BlockedBcat {
+for _, bc := range req.BCat {
+if strings.EqualFold(blocked, bc) {
+return false
+}
+}
+}
+}
+return true
 }
