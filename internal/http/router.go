@@ -279,6 +279,12 @@ func enrichFromSupplyTag(req *openrtb.BidRequest, tag *SupplyTag) {
 	// Slot ID
 	if tag.SlotID != "" {
 		req.Imp[0].TagID = tag.SlotID
+		if req.App != nil {
+			if req.App.Publisher == nil {
+				req.App.Publisher = &openrtb.Publisher{}
+			}
+			req.App.Publisher.ID = tag.SlotID
+		}
 	}
 	// Device type from supply tag env
 	if tag.DeviceType > 0 {

@@ -27,8 +27,7 @@ var (
 	defaultCur       = []string{"USD"}
 	defaultMimes     = []string{"video/mp4", "video/webm", "video/ogg", "application/x-mpegURL"}
 	defaultProtocols = []int{2, 3, 5, 6, 7, 8, 11, 12} // VAST 2-4 inline+wrapper
-	defaultAPI       = []int{1, 2, 7}                    // VPAID 1, VPAID 2, OMID 1
-	defaultPlayback  = []int{1, 2, 6}                    // auto-sound, auto-mute, enter-viewport
+	defaultPlayback  = []int{1, 2, 6}                  // auto-sound, auto-mute, enter-viewport
 )
 
 var alpha2To3Country = map[string]string{
@@ -87,7 +86,7 @@ type Imp struct {
 	BidFloor    float64 `json:"bidfloor"`
 	BidFloorCur string  `json:"bidfloorcur,omitempty"`
 	Secure      int     `json:"secure"`
-	TagID       string  `json:"tagid,omitempty"`
+	TagID       string  `json:"-"`
 	Ext         *ImpExt `json:"ext,omitempty"`
 }
 
@@ -126,13 +125,18 @@ type Banner struct {
 }
 
 type App struct {
-	ID       string   `json:"id,omitempty"`
-	Name     string   `json:"name,omitempty"`
-	Bundle   string   `json:"bundle"`
-	StoreURL string   `json:"storeurl,omitempty"`
-	Cat      []string `json:"cat,omitempty"`
-	Ver      string   `json:"ver,omitempty"`
-	Content  *Content `json:"content,omitempty"`
+	ID        string     `json:"id,omitempty"`
+	Name      string     `json:"name,omitempty"`
+	Bundle    string     `json:"bundle"`
+	StoreURL  string     `json:"storeurl,omitempty"`
+	Cat       []string   `json:"cat,omitempty"`
+	Ver       string     `json:"ver,omitempty"`
+	Publisher *Publisher `json:"publisher,omitempty"`
+	Content   *Content   `json:"content,omitempty"`
+}
+
+type Publisher struct {
+	ID string `json:"id,omitempty"`
 }
 
 type Content struct {
@@ -181,11 +185,24 @@ type Device struct {
 	H              int        `json:"h,omitempty"`
 	Language       string     `json:"language,omitempty"`
 	ConnectionType int        `json:"connectiontype,omitempty"`
+	SUA            *SUA       `json:"sua,omitempty"`
 	Ext            *DeviceExt `json:"ext,omitempty"`
 }
 
 type DeviceExt struct {
 	IFAType string `json:"ifa_type,omitempty"`
+}
+
+type SUABrandVersion struct {
+	Brand   string   `json:"brand,omitempty"`
+	Version []string `json:"version,omitempty"`
+}
+
+type SUA struct {
+	Browsers []SUABrandVersion `json:"browsers,omitempty"`
+	Platform *SUABrandVersion  `json:"platform,omitempty"`
+	Mobile   int               `json:"mobile,omitempty"`
+	Source   int               `json:"source,omitempty"`
 }
 
 type User struct {
@@ -201,8 +218,9 @@ type UserExt struct {
 }
 
 type Regs struct {
-	COPPA int      `json:"coppa,omitempty"`
-	Ext   *RegsExt `json:"ext,omitempty"`
+	COPPA  int      `json:"coppa,omitempty"`
+	GPPSID []int    `json:"gppSid,omitempty"`
+	Ext    *RegsExt `json:"ext,omitempty"`
 }
 
 type RegsExt struct {
@@ -283,14 +301,14 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 		ID:      reqID,
 		TMax:    800,
 		At:      1,
-		AllImps: 1,
+		AllImps: 0,
 		Cur:     defaultCur,
 		Imp: []Imp{
 			{
 				ID:          reqID,
 				BidFloor:    requestDefaults.BidFloor,
 				BidFloorCur: "USD",
-				Secure:      1,
+				Secure:      0,
 				TagID:       tagID,
 				Video: &Video{
 					Mimes:          defaultMimes,
@@ -305,18 +323,18 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 					BoxingAllowed:  1,
 					Placement:      placement,
 					StartDelay:     &startDelay,
-					API:            defaultAPI,
 					PlaybackMethod: defaultPlayback,
-					MaxExtended:    -1,
 				},
 			},
 		},
 		App: &App{
-			ID:       bundle,
-			Name:     c.Query("app_name"),
-			Bundle:   bundle,
-			StoreURL: c.Query("app_store_url", c.Query("storeurl")),
-			Ver:      c.Query("app_ver"),
+			ID:        bundle,
+			Name:      c.Query("app_name"),
+			Bundle:    bundle,
+			StoreURL:  c.Query("app_store_url", c.Query("storeurl")),
+			Ver:       c.Query("app_ver"),
+			Publisher: &Publisher{ID: tagID},
+			Content:   &Content{Language: language, LiveStream: 1},
 		},
 		Device: Device{
 			DNT:        dnt,
@@ -333,9 +351,16 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 			W:          w,
 			H:          h,
 			Language:   language,
+			SUA: &SUA{
+				Browsers: []SUABrandVersion{{Brand: "AmazonFireStick", Version: []string{""}}},
+				Platform: &SUABrandVersion{Brand: "Android"},
+				Mobile:   0,
+				Source:   3,
+			},
 		},
 		Regs: &Regs{
-			Ext: &RegsExt{USPriv: c.Query("us_privacy", "1---")},
+			COPPA:  0,
+			GPPSID: []int{0},
 		},
 		Ext: defaultSChain,
 	}
@@ -355,13 +380,23 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 	if ctGenre := c.Query("ct_genre"); ctGenre != "" {
 		cats := strings.Split(ctGenre, ",")
 		req.App.Cat = cats
-		req.App.Content = &Content{Genre: ctGenre, Cat: cats, Language: language}
+		req.App.Content.Genre = ctGenre
+		req.App.Content.Cat = cats
 	}
 
 	if coppa := c.Query("coppa"); coppa != "" {
 		req.Regs.COPPA, _ = strconv.Atoi(coppa)
 	}
+	if usPriv := c.Query("us_privacy"); usPriv != "" {
+		if req.Regs.Ext == nil {
+			req.Regs.Ext = &RegsExt{}
+		}
+		req.Regs.Ext.USPriv = usPriv
+	}
 	if gdpr := c.Query("gdpr"); gdpr != "" {
+		if req.Regs.Ext == nil {
+			req.Regs.Ext = &RegsExt{}
+		}
 		req.Regs.Ext.GDPR, _ = strconv.Atoi(gdpr)
 	}
 
