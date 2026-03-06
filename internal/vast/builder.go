@@ -132,6 +132,35 @@ func dspNoticePixels(sb *strings.Builder, bid *openrtb.Bid) {
 	}
 }
 
+// trackingEventsBlock returns the <TrackingEvents> XML with SSP event pixels.
+func trackingEventsBlock(evtBase string, bid *openrtb.Bid) string {
+	var sb strings.Builder
+	sb.Grow(1024)
+
+	qs := url.Values{"bid": {bid.ID}, "crid": {bid.CrID}, "cmp": {bid.Seat}}.Encode()
+
+	events := []struct {
+		name string
+		path string
+	}{
+		{"creativeView", "/start"},
+		{"start", "/start"},
+		{"firstQuartile", "/firstQuartile"},
+		{"midpoint", "/midpoint"},
+		{"thirdQuartile", "/thirdQuartile"},
+		{"complete", "/complete"},
+		{"skip", "/skip"},
+	}
+
+	sb.WriteString("      <TrackingEvents>\n")
+	for _, e := range events {
+		fmt.Fprintf(&sb, "       <Tracking event=\"%s\"><![CDATA[%s%s?%s]]></Tracking>\n", e.name, evtBase, e.path, qs)
+	}
+	sb.WriteString("      </TrackingEvents>\n")
+
+	return sb.String()
+}
+
 // impressionBlock returns the SSP + DSP impression pixel XML fragment.
 func impressionBlock(evtBase string, bid *openrtb.Bid, req *openrtb.BidRequest) string {
 	var sb strings.Builder
@@ -215,6 +244,7 @@ func bidDimensions(bid *openrtb.Bid) (int, int) {
 func buildInline(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) string {
 	evtBase := baseURL + "/api/v1/event"
 	impressions := impressionBlock(evtBase, bid, req)
+	tracking := trackingEventsBlock(evtBase, bid)
 
 	w, h := bidDimensions(bid)
 	bidID := html.EscapeString(bid.ID)
@@ -231,7 +261,7 @@ func buildInline(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) stri
     <Creative id="%s">
      <Linear>
       <Duration>00:00:30</Duration>
-      <MediaFiles>
+%s      <MediaFiles>
        <MediaFile type="%s" width="%d" height="%d" delivery="progressive" bitrate="2000"><![CDATA[%s]]></MediaFile>
       </MediaFiles>
      </Linear>
@@ -239,13 +269,14 @@ func buildInline(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) stri
    </Creatives>
   </InLine>
  </Ad>
-</VAST>`, bidID, bidID, impressions, crID, mimeFromURL(admURL), w, h, admURL)
+</VAST>`, bidID, bidID, impressions, crID, tracking, mimeFromURL(admURL), w, h, admURL)
 }
 
 // buildWrapper creates a VAST Wrapper that redirects to the DSP's VAST tag URL.
 func buildWrapper(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) string {
 	evtBase := baseURL + "/api/v1/event"
 	impressions := impressionBlock(evtBase, bid, req)
+	tracking := trackingEventsBlock(evtBase, bid)
 	bidID := html.EscapeString(bid.ID)
 	admURL := resolveAdm(bid)
 
@@ -255,10 +286,15 @@ func buildWrapper(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) str
   <Wrapper>
    <AdSystem>viadsmedia SSP</AdSystem>
    <VASTAdTagURI><![CDATA[%s]]></VASTAdTagURI>
-%s   <Creatives></Creatives>
+%s   <Creatives>
+    <Creative>
+     <Linear>
+%s     </Linear>
+    </Creative>
+   </Creatives>
   </Wrapper>
  </Ad>
-</VAST>`, bidID, admURL, impressions)
+</VAST>`, bidID, admURL, impressions, tracking)
 }
 
 // buildPassthrough takes a complete VAST XML document from the DSP and
@@ -268,6 +304,7 @@ func buildPassthrough(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string)
 
 	evtBase := baseURL + "/api/v1/event"
 	impressions := impressionBlock(evtBase, bid, req)
+	tracking := trackingEventsBlock(evtBase, bid)
 
 	// Inject impression pixels after the first <Impression> block or after <InLine>/<Wrapper>
 	injected := false
@@ -288,6 +325,18 @@ func buildPassthrough(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string)
 				pos := adIdx + adEnd + 1
 				xml = xml[:pos] + "\n" + impressions + xml[pos:]
 			}
+		}
+	}
+
+	// Inject SSP tracking events into existing <TrackingEvents> or before </Linear>
+	trackInjected := false
+	if teIdx := strings.Index(xml, "</TrackingEvents>"); teIdx >= 0 {
+		xml = xml[:teIdx] + tracking[len("      <TrackingEvents>\n"):len(tracking)-len("      </TrackingEvents>\n")] + xml[teIdx:]
+		trackInjected = true
+	}
+	if !trackInjected {
+		if linIdx := strings.Index(xml, "</Linear>"); linIdx >= 0 {
+			xml = xml[:linIdx] + tracking + xml[linIdx:]
 		}
 	}
 
