@@ -272,8 +272,11 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 		req.User = &User{ID: ifa, Ext: &UserExt{Consent: ""}}
 	}
 
-	// Geo from query params
+	// Geo from query params (convert alpha-2 country codes to alpha-3)
 	country := c.Query("country_code", c.Query("country"))
+	if len(country) == 2 {
+		country = geo.ToAlpha3(country)
+	}
 	region := c.Query("region")
 	city := c.Query("city")
 	zip := c.Query("zip")

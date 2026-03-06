@@ -76,7 +76,7 @@ func Lookup(ipStr string) *Result {
 	}
 
 	if record.Country.IsoCode != "" {
-		result.Country = toAlpha3(record.Country.IsoCode)
+		result.Country = ToAlpha3(record.Country.IsoCode)
 	}
 	if len(record.Subdivisions) > 0 {
 		result.Region = record.Subdivisions[0].IsoCode
@@ -131,7 +131,7 @@ func DetectIFAType(ua, make_, os_ string) string {
 }
 
 // toAlpha3 converts ISO 3166-1 alpha-2 to alpha-3.
-func toAlpha3(code string) string {
+func ToAlpha3(code string) string {
 	if v, ok := alpha2to3[strings.ToUpper(code)]; ok {
 		return v
 	}

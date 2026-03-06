@@ -14,6 +14,7 @@ import (
 	"ssp/internal/bidder"
 	"ssp/internal/config"
 	"ssp/internal/floor"
+	"ssp/internal/geo"
 	"ssp/internal/httputil"
 	"ssp/internal/monitor"
 	"ssp/internal/openrtb"
@@ -235,11 +236,17 @@ func enrichFromSupplyTag(req *openrtb.BidRequest, tag *SupplyTag) {
 	if tag.DeviceType > 0 {
 		req.Device.DeviceType = tag.DeviceType
 	}
-	// Country code
-	if tag.CountryCode != "" && req.Device.Geo != nil {
-		req.Device.Geo.Country = tag.CountryCode
-	} else if tag.CountryCode != "" {
-		req.Device.Geo = &openrtb.Geo{Country: tag.CountryCode, Type: 2}
+	// Country code (convert to alpha-3)
+	if tag.CountryCode != "" {
+		cc := tag.CountryCode
+		if len(cc) == 2 {
+			cc = geo.ToAlpha3(cc)
+		}
+		if req.Device.Geo != nil {
+			req.Device.Geo.Country = cc
+		} else {
+			req.Device.Geo = &openrtb.Geo{Country: cc, Type: 2}
+		}
 	}
 	// Content genre
 	if tag.ContentGenre != "" && req.App != nil {
