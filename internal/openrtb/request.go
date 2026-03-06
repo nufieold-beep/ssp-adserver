@@ -283,6 +283,12 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 	ua := c.Query("ua", c.Get("User-Agent"))
 	ifa := c.Query("ifa")
 	bundle := c.Query("app_bundle", c.Query("bundle"))
+	if bundle == "" && tagID != "" {
+		bundle = "supply." + normalizeBundleToken(tagID)
+	}
+	if bundle == "" {
+		bundle = "app.unknown"
+	}
 	deviceOS := c.Query("os")
 	deviceMake := c.Query("device_make")
 
@@ -298,7 +304,7 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 
 	req := BidRequest{
 		ID:      reqID,
-		TMax:    800,
+		TMax:    queryInt(c, "tmax", 0),
 		At:      1,
 		AllImps: 0,
 		Cur:     defaultCur,
@@ -349,7 +355,7 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 			W:          w,
 			H:          h,
 			Language:   language,
-			SUA:        detectSUA(ua, deviceType, deviceMake, deviceOS),
+			SUA:        buildSUAFromUserAgent(ua, deviceType, deviceMake, deviceOS),
 		},
 		Regs: &Regs{
 			COPPA:  0,
@@ -396,6 +402,23 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 	return req
 }
 
+func normalizeBundleToken(v string) string {
+	v = strings.TrimSpace(strings.ToLower(v))
+	if v == "" {
+		return "unknown"
+	}
+	replacer := strings.NewReplacer(" ", ".", "/", ".", "\\", ".", "_", ".", ":", ".", "-", ".")
+	v = replacer.Replace(v)
+	for strings.Contains(v, "..") {
+		v = strings.ReplaceAll(v, "..", ".")
+	}
+	v = strings.Trim(v, ".")
+	if v == "" {
+		return "unknown"
+	}
+	return v
+}
+
 // queryInt parses a query param as int with a default.
 func queryInt(c *fiber.Ctx, key string, def int) int {
 	v := c.Query(key)
@@ -424,11 +447,11 @@ func queryIntFallback(c *fiber.Ctx, primary, fallback string, def int) int {
 	return def
 }
 
-// detectSUA builds device.sua from user-agent and device hints.
-func detectSUA(ua string, deviceType int, make, os string) *SUA {
+// buildSUAFromUserAgent builds device.sua from user-agent and device hints.
+func buildSUAFromUserAgent(ua string, deviceType int, make, os string) *SUA {
 	uaL := strings.ToLower(ua)
 	platformBrand := detectPlatformBrand(uaL, make, os)
-	browserBrand, browserVer := detectBrowserBrandVersion(ua, uaL, platformBrand, make, os)
+	browserBrand, browserVer := detectBrowserBrandVersionFromUA(ua, uaL, platformBrand, make, os)
 	mobile := detectMobileFlag(uaL, deviceType)
 
 	return &SUA{
@@ -483,33 +506,33 @@ func detectPlatformBrand(uaL, make, os string) string {
 	return "Android"
 }
 
-func detectBrowserBrandVersion(ua, uaL, platformBrand, make, os string) (string, string) {
+func detectBrowserBrandVersionFromUA(ua, uaL, platformBrand, make, os string) (string, string) {
 	switch {
 	case strings.Contains(uaL, "aft") || strings.Contains(uaL, "fire tv") || strings.Contains(uaL, "amazon"):
-		if v := uaTokenVersion(ua, "Silk/"); v != "" {
+		if v := extractUATokenVersion(ua, "Silk/"); v != "" {
 			return "AmazonFireStick", v
 		}
 		return "AmazonFireStick", ""
 	case strings.Contains(uaL, "applecoremedia"):
-		if v := uaTokenVersion(ua, "AppleCoreMedia/"); v != "" {
+		if v := extractUATokenVersion(ua, "AppleCoreMedia/"); v != "" {
 			return "AppleTV", v
 		}
 		return "AppleTV", ""
 	case strings.Contains(uaL, "roku"):
-		if v := uaTokenVersion(ua, "Roku/"); v != "" {
+		if v := extractUATokenVersion(ua, "Roku/"); v != "" {
 			return "Roku", v
 		}
 		return "Roku", ""
 	case strings.Contains(uaL, "tizen") || (strings.Contains(uaL, "samsung") && strings.Contains(uaL, "tv")):
-		if v := uaTokenVersion(ua, "Tizen "); v != "" {
+		if v := extractUATokenVersion(ua, "Tizen "); v != "" {
 			return "SamsungTV", v
 		}
 		return "SamsungTV", ""
 	case strings.Contains(uaL, "webos") || (strings.Contains(uaL, "lg") && strings.Contains(uaL, "tv")):
-		if v := uaTokenVersion(ua, "Web0S/"); v != "" {
+		if v := extractUATokenVersion(ua, "Web0S/"); v != "" {
 			return "LGTV", v
 		}
-		if v := uaTokenVersion(ua, "webOS/"); v != "" {
+		if v := extractUATokenVersion(ua, "webOS/"); v != "" {
 			return "LGTV", v
 		}
 		return "LGTV", ""
@@ -529,7 +552,7 @@ func detectBrowserBrandVersion(ua, uaL, platformBrand, make, os string) (string,
 	}
 
 	for _, t := range tokens {
-		if v := uaTokenVersion(ua, t.Token); v != "" {
+		if v := extractUATokenVersion(ua, t.Token); v != "" {
 			if t.Brand == "Safari" && !strings.Contains(uaL, "safari") {
 				continue
 			}
@@ -561,7 +584,7 @@ func detectBrowserBrandVersion(ua, uaL, platformBrand, make, os string) (string,
 	return "Unknown", ""
 }
 
-func uaTokenVersion(ua, token string) string {
+func extractUATokenVersion(ua, token string) string {
 	idx := strings.Index(ua, token)
 	if idx == -1 {
 		return ""

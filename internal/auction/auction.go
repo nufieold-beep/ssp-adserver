@@ -20,42 +20,51 @@ func Run(bids []openrtb.Bid, floor float64, auctionType string) *AuctionResult {
 	result := &AuctionResult{}
 
 	// Filter valid bids
-	var valid []openrtb.Bid
+	var eligibleBids []openrtb.Bid
 	for i := range bids {
 		bid := &bids[i]
-		if bid.Price < floor {
+		if bid.Price <= 0 {
+			continue
+		}
+
+		// Keep floor checks on gross bid value when margin is configured.
+		floorComparablePrice := bid.Price
+		if bid.Margin > 0 && bid.Margin < 1 {
+			floorComparablePrice = bid.Price / (1 - bid.Margin)
+		}
+		if floorComparablePrice < floor {
 			continue
 		}
 		if bid.Adm == "" && bid.NURL == "" {
 			continue
 		}
-		valid = append(valid, *bid)
+		eligibleBids = append(eligibleBids, *bid)
 	}
 
-	if len(valid) == 0 {
+	if len(eligibleBids) == 0 {
 		return result
 	}
 
 	// Sort: find highest and second-highest
-	var winnerIdx int
-	highest := valid[0].Price
-	secondHighest := floor
-	for i := 1; i < len(valid); i++ {
-		if valid[i].Price > highest {
-			secondHighest = highest
-			winnerIdx = i
-			highest = valid[i].Price
-		} else if valid[i].Price > secondHighest {
-			secondHighest = valid[i].Price
+	var winnerIndex int
+	highestPrice := eligibleBids[0].Price
+	secondHighestPrice := floor
+	for i := 1; i < len(eligibleBids); i++ {
+		if eligibleBids[i].Price > highestPrice {
+			secondHighestPrice = highestPrice
+			winnerIndex = i
+			highestPrice = eligibleBids[i].Price
+		} else if eligibleBids[i].Price > secondHighestPrice {
+			secondHighestPrice = eligibleBids[i].Price
 		}
 	}
 
-	result.Winner = &valid[winnerIdx]
+	result.Winner = &eligibleBids[winnerIndex]
 
 	// Set clearing price based on auction type
 	switch auctionType {
 	case "second_price":
-		result.WinPrice = secondHighest + 0.01 // second price + penny
+		result.WinPrice = secondHighestPrice + 0.01 // second price + penny
 		if result.WinPrice > result.Winner.Price {
 			result.WinPrice = result.Winner.Price
 		}
@@ -64,8 +73,8 @@ func Run(bids []openrtb.Bid, floor float64, auctionType string) *AuctionResult {
 	}
 	result.Winner.WinPrice = result.WinPrice
 	// Collect losers
-	for i, bid := range valid {
-		if i != winnerIdx {
+	for i, bid := range eligibleBids {
+		if i != winnerIndex {
 			result.Losers = append(result.Losers, bid)
 		}
 	}

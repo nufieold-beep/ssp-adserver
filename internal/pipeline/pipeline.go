@@ -103,9 +103,11 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 	p.Metrics.RecordBidLatency(float64(result.BidLatency.Milliseconds()))
 
 	// ── Stage 4: Collect and flatten bids ──
-	var allBids []openrtb.Bid
+	var collectedBids []openrtb.Bid
+	hadAdapterErrors := false
 	for _, br := range bidResults {
 		if br.Error != nil {
+			hadAdapterErrors = true
 			p.Bus.Publish(eventbus.Event{Type: eventbus.EvtError, Data: map[string]interface{}{
 				"request_id": req.ID, "adapter": br.AdapterID, "error": br.Error.Error(),
 			}})
@@ -123,10 +125,17 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 				"bid_price": bid.Price, "bid_id": bid.ID, "latency_ms": br.Latency.Milliseconds(),
 			}})
 		}
-		allBids = append(allBids, br.Bids...)
+		collectedBids = append(collectedBids, br.Bids...)
 	}
 
-	if len(allBids) == 0 {
+	if len(collectedBids) == 0 {
+		if hadAdapterErrors {
+			p.Metrics.RecordError()
+			p.Metrics.AddTrafficEvent(monitor.TrafficEvent{
+				Type: "adapter_error", RequestID: req.ID, Env: detectEnv(req),
+				Details: "all eligible demand adapters failed",
+			})
+		}
 		p.Metrics.RecordNoBid()
 		p.Metrics.AddTrafficEvent(monitor.TrafficEvent{
 			Type: "no_bid", RequestID: req.ID, Env: detectEnv(req),
@@ -139,8 +148,8 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 	}
 
 	// ── Stage 5: Ad quality / brand safety scan ──
-	allBids = p.AQScanner.Filter(allBids, req)
-	if len(allBids) == 0 {
+	collectedBids = p.AQScanner.Filter(collectedBids, req)
+	if len(collectedBids) == 0 {
 		p.Metrics.RecordNoBid()
 		result.NoBid = true
 		result.VAST = vast.BuildNoAd()
@@ -150,12 +159,12 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 
 	// ── Stage 6: Open-market auction ──
 	auctionType := p.AuctionType
-	auctionResult := auction.Run(allBids, req.Imp[0].BidFloor, auctionType)
+	auctionResult := auction.Run(collectedBids, req.Imp[0].BidFloor, auctionType)
 
 	p.Bus.PublishSync(eventbus.Event{Type: eventbus.EvtAuctionEnd, Data: map[string]interface{}{
 		"request_id": req.ID, "winner_id": safeWinnerID(auctionResult),
 		"win_price": auctionResult.WinPrice, "auction_type": auctionType,
-		"bid_count": len(allBids),
+		"bid_count": len(collectedBids),
 	}})
 
 	if auctionResult.Winner == nil {

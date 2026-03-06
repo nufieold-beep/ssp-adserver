@@ -1679,6 +1679,25 @@ func supplyTagVastHandler(p *pipeline.Pipeline, metrics *monitor.Metrics, s *sto
 			s.mu.RUnlock()
 		}
 
+		// Drop stale/unknown mapping targets. If nothing valid remains,
+		// fall back to all active adapters instead of forcing empty fanout.
+		if len(mappedAdapterIDs) > 0 && p.Registry != nil {
+			validIDs := make([]string, 0, len(mappedAdapterIDs))
+			seen := make(map[string]struct{}, len(mappedAdapterIDs))
+			for _, adapterID := range mappedAdapterIDs {
+				if _, ok := seen[adapterID]; ok {
+					continue
+				}
+				seen[adapterID] = struct{}{}
+				cfg := p.Registry.GetConfig(adapterID)
+				if cfg == nil || cfg.Status != 1 {
+					continue
+				}
+				validIDs = append(validIDs, adapterID)
+			}
+			mappedAdapterIDs = validIDs
+		}
+
 		// If mappings exist, only those demand sources are called.
 		// If no mappings, fan out to all active adapters (backward compat).
 		var result *pipeline.Result

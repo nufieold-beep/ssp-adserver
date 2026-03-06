@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"ssp/internal/httputil"
 	"ssp/internal/openrtb"
@@ -82,11 +83,19 @@ func (a *ORTBAdapter) RequestBids(ctx context.Context, req *openrtb.BidRequest) 
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == 204 {
+	if resp.StatusCode == http.StatusNoContent {
 		return &BidResult{AdapterID: a.id, NoBid: true}, nil
 	}
-	if resp.StatusCode != 200 {
-		return &BidResult{AdapterID: a.id, NoBid: true}, nil
+	if resp.StatusCode != http.StatusOK {
+		body, _ := httputil.ReadResponseBody(resp)
+		msg := strings.TrimSpace(string(body))
+		if len(msg) > 240 {
+			msg = msg[:240]
+		}
+		if msg == "" {
+			msg = http.StatusText(resp.StatusCode)
+		}
+		return nil, fmt.Errorf("ortb adapter %s returned HTTP %d: %s", a.id, resp.StatusCode, msg)
 	}
 
 	reader, closeFn, gzErr := httputil.ResponseBodyReader(resp)
@@ -100,33 +109,33 @@ func (a *ORTBAdapter) RequestBids(ctx context.Context, req *openrtb.BidRequest) 
 		return nil, err
 	}
 
-	valid := bidResp.Validate(req)
-	if len(valid) == 0 {
+	validatedBids := bidResp.Validate(req)
+	if len(validatedBids) == 0 {
 		return &BidResult{AdapterID: a.id, NoBid: true}, nil
 	}
 
 	// Apply margin
 	if a.margin > 0 {
-		for i := range valid {
-			valid[i].Margin = a.margin
-			valid[i].Price *= (1 - a.margin)
+		for i := range validatedBids {
+			validatedBids[i].Margin = a.margin
+			validatedBids[i].Price *= (1 - a.margin)
 		}
 	}
 
-	return &BidResult{AdapterID: a.id, Bids: valid}, nil
+	return &BidResult{AdapterID: a.id, Bids: validatedBids}, nil
 }
 
 // applyEndpointConfig merges per-endpoint ORTB settings into a copy of the bid request.
 func (a *ORTBAdapter) applyEndpointConfig(req *openrtb.BidRequest) *openrtb.BidRequest {
 	// Shallow copy the request
-	out := *req
+	clonedReq := *req
 
 	// Merge BAdv: combine request-level + endpoint-level blocked advertisers
 	if len(req.BAdv) > 0 || len(a.badv) > 0 {
 		merged := make([]string, 0, len(req.BAdv)+len(a.badv))
 		merged = append(merged, req.BAdv...)
 		merged = append(merged, a.badv...)
-		out.BAdv = sanitizeStringList(merged)
+		clonedReq.BAdv = sanitizeStringList(merged)
 	}
 
 	// Merge BCat: combine request-level + endpoint-level blocked categories
@@ -134,20 +143,20 @@ func (a *ORTBAdapter) applyEndpointConfig(req *openrtb.BidRequest) *openrtb.BidR
 		merged := make([]string, 0, len(req.BCat)+len(a.bcat))
 		merged = append(merged, req.BCat...)
 		merged = append(merged, a.bcat...)
-		out.BCat = sanitizeStringList(merged)
+		clonedReq.BCat = sanitizeStringList(merged)
 	}
 
 	// Supply chain: remove ext.schain if not enabled for this endpoint
-	if !a.schainEnabled && out.Ext != nil && out.Ext.SChain != nil {
-		out.Ext = nil
+	if !a.schainEnabled && clonedReq.Ext != nil && clonedReq.Ext.SChain != nil {
+		clonedReq.Ext = nil
 	}
 
 	// Remove PChain: strip schain nodes (pchain removal)
-	if a.removePChain && out.Ext != nil && out.Ext.SChain != nil {
-		out.Ext = nil
+	if a.removePChain && clonedReq.Ext != nil && clonedReq.Ext.SChain != nil {
+		clonedReq.Ext = nil
 	}
 
-	return &out
+	return &clonedReq
 }
 
 func sanitizeStringList(in []string) []string {
