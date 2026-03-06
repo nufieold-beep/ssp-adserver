@@ -686,6 +686,7 @@ textarea{resize:vertical;min-height:68px}
       <div class="form-row">
         <div class="form-group"><label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="doGzip"> GZIP Support</label></div>
         <div class="form-group"><label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="doRemovePchain"> Remove PChain</label></div>
+        <div class="form-group"><label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="doSchain"> Supply chain enabled</label></div>
       </div>
     </div>
     <div class="modal-footer">
@@ -1171,7 +1172,7 @@ async function loadDemandOrtb() {
   } catch(e){}
 }
 
-function openDemandOrtbModal(){$('doModalTitle').textContent='New Demand Endpoint';$('doEditId').value='';$('doName').value='';$('doUrl').value='';$('doFloor').value='0';$('doMargin').value='0';$('doTimeoutMs').value='500';$('doQps').value='0';$('doBadv').value='';$('doBcat').value='';$('doGzip').checked=false;$('doRemovePchain').checked=false;openModal('demandOrtbModal');}
+function openDemandOrtbModal(){$('doModalTitle').textContent='New Demand Endpoint';$('doEditId').value='';$('doName').value='';$('doUrl').value='';$('doFloor').value='0';$('doMargin').value='0';$('doTimeoutMs').value='500';$('doQps').value='0';$('doBadv').value='';$('doBcat').value='';$('doGzip').checked=false;$('doRemovePchain').checked=false;$('doSchain').checked=false;openModal('demandOrtbModal');}
 
 async function editDemandOrtb(id) {
   try {
@@ -1181,14 +1182,14 @@ async function editDemandOrtb(id) {
     $('doFloor').value=e.floor||0;$('doMargin').value=e.margin||0;
     $('doTimeoutMs').value=e.timeout_ms||500;$('doQps').value=e.qps_limit||0;
     $('doBadv').value=(e.badv||[]).join(', ');$('doBcat').value=(e.bcat||[]).join(', ');
-    $('doGzip').checked=!!e.gzip_support;$('doRemovePchain').checked=!!e.remove_pchain;
+    $('doGzip').checked=!!e.gzip_support;$('doRemovePchain').checked=!!e.remove_pchain;$('doSchain').checked=!!e.schain_enabled;
     openModal('demandOrtbModal');
   } catch(e){}
 }
 
 async function saveDemandOrtb() {
   const id=$v('doEditId');
-  const body={name:$v('doName'),endpoint_url:$v('doUrl'),integration:$v('doIntType'),ortb_version:$v('doOrtbVer'),auction_type:$v('doAuction'),floor:parseFloat($v('doFloor'))||0,margin:parseFloat($v('doMargin'))||0,timeout_ms:parseInt($v('doTimeoutMs'))||500,qps_limit:parseInt($v('doQps'))||0,gzip_support:$('doGzip').checked,remove_pchain:$('doRemovePchain').checked,badv:$v('doBadv').split(',').map(s=>s.trim()).filter(Boolean),bcat:$v('doBcat').split(',').map(s=>s.trim()).filter(Boolean)};
+  const body={name:$v('doName'),endpoint_url:$v('doUrl'),integration:$v('doIntType'),ortb_version:$v('doOrtbVer'),auction_type:$v('doAuction'),floor:parseFloat($v('doFloor'))||0,margin:parseFloat($v('doMargin'))||0,timeout_ms:parseInt($v('doTimeoutMs'))||500,qps_limit:parseInt($v('doQps'))||0,gzip_support:$('doGzip').checked,remove_pchain:$('doRemovePchain').checked,schain_enabled:$('doSchain').checked,badv:$v('doBadv').split(',').map(s=>s.trim()).filter(Boolean),bcat:$v('doBcat').split(',').map(s=>s.trim()).filter(Boolean)};
   if(!body.name||!body.endpoint_url)return toast('Name and URL required','error');
   try {
     if(id){await api(`${SD}/demand-endpoints/${id}`,{method:'PUT',body});toast('Updated');}

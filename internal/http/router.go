@@ -96,6 +96,7 @@ type DemandEndpoint struct {
 	RemovePChain  bool     `json:"remove_pchain"`
 	BAdv          []string `json:"badv"`
 	BCat          []string `json:"bcat"`
+	SupplyChain   bool     `json:"schain_enabled"`
 }
 
 type DemandVastTag struct {
@@ -1336,6 +1337,7 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 		e.RemovePChain = update.RemovePChain
 		e.BAdv = update.BAdv
 		e.BCat = update.BCat
+		e.SupplyChain = update.SupplyChain
 		return c.JSON(e)
 	})
 
