@@ -71,6 +71,7 @@ func Build(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) string {
 // Includes full campaign/creative/geo/supply context for metrics tracking.
 func impressionBlock(evtBase string, bid *openrtb.Bid, req *openrtb.BidRequest) string {
 	var sb strings.Builder
+	sb.Grow(512) // Pre-allocate memory to prevent costly heap re-allocations during concatenations
 
 	if req == nil {
 		req = &openrtb.BidRequest{}
@@ -175,7 +176,7 @@ func buildInline(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) stri
 
 	admURL := strings.TrimSpace(bid.Adm)
 	admURL = bid.SubstituteMacros(admURL) // Evaluate macros natively within direct media URLs
-	
+
 	mimeType := "video/mp4"
 	ext := strings.ToLower(path.Ext(strings.SplitN(admURL, "?", 2)[0]))
 	switch ext {
@@ -221,7 +222,7 @@ func buildWrapper(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) str
 	evtBase := fmt.Sprintf("%s/api/v1/event", baseURL)
 	impressions := impressionBlock(evtBase, bid, req)
 	bidID := html.EscapeString(bid.ID)
-	
+
 	admURL := strings.TrimSpace(bid.Adm)
 	admURL = bid.SubstituteMacros(admURL) // Resolve formatting inside the tag URI string
 
@@ -242,7 +243,7 @@ func buildWrapper(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) str
 func buildPassthrough(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) string {
 	xml := strings.TrimSpace(bid.Adm)
 	xml = bid.SubstituteMacros(xml) // Resolve ${AUCTION_PRICE} and others embedded natively in VAST XML
-	
+
 	evtBase := fmt.Sprintf("%s/api/v1/event", baseURL)
 	impressions := impressionBlock(evtBase, bid, req)
 

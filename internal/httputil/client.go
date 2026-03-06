@@ -21,9 +21,9 @@ const MaxResponseBody = 2 * 1024 * 1024
 // Shared HTTP transport with connection pooling for all demand adapters.
 // Reuses TCP connections across adapters instead of each creating isolated pools.
 var SharedTransport = &http.Transport{
-	MaxIdleConns:        100,
-	MaxIdleConnsPerHost: 10,
-	MaxConnsPerHost:     50,
+	MaxIdleConns:        2000,
+	MaxIdleConnsPerHost: 500,
+	MaxConnsPerHost:     1000,
 	IdleConnTimeout:     90 * time.Second,
 	TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
 }

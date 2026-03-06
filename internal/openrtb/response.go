@@ -42,8 +42,8 @@ type Bid struct {
 
 // SubstituteMacros replaces OpenRTB auction macros in a URL.
 func (b *Bid) SubstituteMacros(url string) string {
-	if url == "" {
-		return ""
+	if url == "" || (!strings.Contains(url, "${") && !strings.Contains(url, "%24")) {
+		return url
 	}
 
 	clearPrice := b.WinPrice
