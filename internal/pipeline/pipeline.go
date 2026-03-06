@@ -28,6 +28,7 @@ type Pipeline struct {
 	Bus         *eventbus.Bus
 	AuctionType string
 	DefaultTMax int
+	BaseURL     string // publicly-reachable origin for tracking URLs
 }
 
 // Result holds the output of the full pipeline execution.
@@ -173,7 +174,7 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, adapter
 	}
 
 	// ── Stage 8: Build VAST response ──
-	xml := vast.Build(winner, req.ID)
+	xml := vast.Build(winner, req.ID, p.BaseURL)
 	if xml == "" {
 		p.Metrics.RecordError()
 		result.Error = fmt.Errorf("VAST build failed for bid %s", winner.ID)

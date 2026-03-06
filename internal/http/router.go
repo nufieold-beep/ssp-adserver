@@ -457,7 +457,7 @@ func vastHandler(mgr *bidder.Manager, metrics *monitor.Metrics, s *store, auctio
 		}
 
 		// Build VAST XML with real tracking URLs and burl as impression pixel
-		xml := vast.Build(winner, req.ID)
+		xml := vast.Build(winner, req.ID, c.BaseURL())
 		if xml == "" {
 			metrics.RecordError()
 			return c.Status(500).JSON(fiber.Map{"error": "Failed to build VAST"})
@@ -1462,6 +1462,7 @@ func supplyTagVastHandler(p *pipeline.Pipeline, metrics *monitor.Metrics, s *sto
 		// If mappings exist, only those demand sources are called.
 		// If no mappings, fan out to all active adapters (backward compat).
 		var result *pipeline.Result
+		p.BaseURL = c.BaseURL()
 		if len(mappedAdapterIDs) > 0 {
 			result = p.Execute(c.Context(), &req, mappedAdapterIDs)
 		} else {
@@ -1509,6 +1510,7 @@ func pipelineHandler(p *pipeline.Pipeline, metrics *monitor.Metrics, s *store) f
 			return c.Status(400).JSON(fiber.Map{"error": err.Error()})
 		}
 
+		p.BaseURL = c.BaseURL()
 		result := p.Execute(c.Context(), &req)
 
 		if result.Error != nil {

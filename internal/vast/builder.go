@@ -46,14 +46,18 @@ func DetectAdmType(adm string) AdmType {
 // Build creates a VAST 3.0 XML response from a winning bid.
 // Auto-detects the Adm content type and generates InLine, Wrapper,
 // or passthrough VAST accordingly, always injecting SSP tracking pixels.
-func Build(bid *openrtb.Bid, requestID string) string {
+// baseURL is the publicly-reachable origin (e.g. from the HTTP request).
+func Build(bid *openrtb.Bid, requestID, baseURL string) string {
+	if baseURL == "" {
+		baseURL = BaseURL
+	}
 	switch DetectAdmType(bid.Adm) {
 	case AdmPassthrough:
-		return buildPassthrough(bid, requestID)
+		return buildPassthrough(bid, requestID, baseURL)
 	case AdmWrapper:
-		return buildWrapper(bid, requestID)
+		return buildWrapper(bid, requestID, baseURL)
 	default:
-		return buildInline(bid, requestID)
+		return buildInline(bid, requestID, baseURL)
 	}
 }
 
@@ -70,8 +74,8 @@ func impressionBlock(evtBase, requestID string, bid *openrtb.Bid) string {
 }
 
 // buildInline creates a self-contained VAST InLine ad from a media file URL.
-func buildInline(bid *openrtb.Bid, requestID string) string {
-	evtBase := fmt.Sprintf("%s/api/v1/event", BaseURL)
+func buildInline(bid *openrtb.Bid, requestID, baseURL string) string {
+	evtBase := fmt.Sprintf("%s/api/v1/event", baseURL)
 	impressions := impressionBlock(evtBase, requestID, bid)
 
 	w, h := bid.W, bid.H
@@ -109,8 +113,8 @@ func buildInline(bid *openrtb.Bid, requestID string) string {
 // buildWrapper creates a VAST Wrapper that redirects to the DSP's VAST tag URL.
 // SSP tracking and impression pixels are injected so they fire alongside the
 // downstream ad's own events.
-func buildWrapper(bid *openrtb.Bid, requestID string) string {
-	evtBase := fmt.Sprintf("%s/api/v1/event", BaseURL)
+func buildWrapper(bid *openrtb.Bid, requestID, baseURL string) string {
+	evtBase := fmt.Sprintf("%s/api/v1/event", baseURL)
 	impressions := impressionBlock(evtBase, requestID, bid)
 	bidID := html.EscapeString(bid.ID)
 
@@ -128,9 +132,9 @@ func buildWrapper(bid *openrtb.Bid, requestID string) string {
 
 // buildPassthrough takes a complete VAST XML document from the DSP and
 // injects SSP impression + tracking pixels into it.
-func buildPassthrough(bid *openrtb.Bid, requestID string) string {
+func buildPassthrough(bid *openrtb.Bid, requestID, baseURL string) string {
 	xml := html.UnescapeString(strings.TrimSpace(bid.Adm))
-	evtBase := fmt.Sprintf("%s/api/v1/event", BaseURL)
+	evtBase := fmt.Sprintf("%s/api/v1/event", baseURL)
 	impressions := impressionBlock(evtBase, requestID, bid)
 
 	// Inject impression pixels after the first <Impression> block or after <InLine>/<Wrapper>
