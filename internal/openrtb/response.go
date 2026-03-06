@@ -56,13 +56,33 @@ func (b *Bid) SubstituteMacros(url string) string {
 
 	price := strings.NewReplacer(
 		"${AUCTION_PRICE}", formatPrice(clearPrice),
+		"%24%7BAUCTION_PRICE%7D", formatPrice(clearPrice),
+		"%24{AUCTION_PRICE}", formatPrice(clearPrice),
 		"${AUCTION_ID}", b.ID,
+		"%24%7BAUCTION_ID%7D", b.ID,
+		"%24{AUCTION_ID}", b.ID,
 		"${AUCTION_BID_ID}", b.ID,
+		"%24%7BAUCTION_BID_ID%7D", b.ID,
+		"%24{AUCTION_BID_ID}", b.ID,
 		"${AUCTION_IMP_ID}", b.ImpID,
+		"%24%7BAUCTION_IMP_ID%7D", b.ImpID,
+		"%24{AUCTION_IMP_ID}", b.ImpID,
 		"${AUCTION_SEAT_ID}", b.Seat,
+		"%24%7BAUCTION_SEAT_ID%7D", b.Seat,
+		"%24{AUCTION_SEAT_ID}", b.Seat,
 		"${AUCTION_CURRENCY}", "USD",
+		"%24%7BAUCTION_CURRENCY%7D", "USD",
+		"%24{AUCTION_CURRENCY}", "USD",
 	)
-	return price.Replace(url)
+	replaced := price.Replace(url)
+	if !strings.HasPrefix(replaced, "http://") && !strings.HasPrefix(replaced, "https://") {
+		if strings.HasPrefix(replaced, "//") {
+			replaced = "https:" + replaced
+		} else {
+			replaced = "https://" + replaced
+		}
+	}
+	return replaced
 }
 
 func formatPrice(p float64) string {
