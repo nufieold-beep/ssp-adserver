@@ -41,6 +41,21 @@ func TestDecisionAuditSourceUsesSupplyTagID(t *testing.T) {
 	}
 }
 
+func TestRecordAdDecisionStoresSupplySourceID(t *testing.T) {
+	s := newStore()
+	s.recordAdDecision(&openrtb.BidRequest{App: &openrtb.App{Bundle: "B072M565NX29an"}}, nil, 0, 42, "42", "", "", 0, "", "served")
+
+	if len(s.adDecisions) != 1 {
+		t.Fatalf("expected one decision record, got %d", len(s.adDecisions))
+	}
+	if got := s.adDecisions[0].SupplyID; got != 42 {
+		t.Fatalf("expected supply source id 42, got %d", got)
+	}
+	if got := s.adDecisions[0].RawBundle; got != "B072M565NX29an" {
+		t.Fatalf("expected raw bundle to be stored, got %q", got)
+	}
+}
+
 func TestDecisionAuditBundlePrefersConfiguredBundleForNonCanonicalRequestBundle(t *testing.T) {
 	req := &openrtb.BidRequest{App: &openrtb.App{Bundle: "B00V3UTTPSernsp", ID: "B00V3UTTPSernsp"}}
 	tag := &SupplyTag{AppBundle: "com.amazon.firetv.ernsp"}

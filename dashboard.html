@@ -374,9 +374,9 @@ textarea{resize:vertical;min-height:68px}
     <div class="card-header"><h3>Recent Decisions</h3></div>
     <div class="card-body table-wrap">
       <table><thead><tr>
-        <th>Time</th><th>Creative ID</th><th>Source ID</th><th>ADomain</th>
+        <th>Time</th><th>Creative ID</th><th>Supply Source ID</th><th>ADomain</th>
         <th>Bid $</th><th>Net $</th><th>Seat</th><th>ADM Type</th>
-        <th>Bundle</th><th>Country</th><th>Device</th>
+        <th>Bundle</th><th>Raw Bundle</th><th>Country</th><th>Device</th>
       </tr></thead>
         <tbody id="decBody"><tr><td colspan="11" class="empty">Loading...</td></tr></tbody>
       </table>
@@ -1113,11 +1113,11 @@ async function loadDecisions() {
     const sorted=[...decs].reverse();
     $('decBody').innerHTML=sorted.length?sorted.map(d=>`<tr>
       <td style="font-size:11px">${d.time?new Date(d.time).toLocaleTimeString():'—'}</td>
-      <td>${esc(d.creative_id||'—')}</td><td>${esc(d.source||'—')}</td><td>${esc(d.adomain||'—')}</td>
+      <td>${esc(d.creative_id||'—')}</td><td>${esc(String(d.supply_source_id||d.source||'—'))}</td><td>${esc(d.adomain||'—')}</td>
       <td>${fmtMoney(d.bid_price)}</td><td>${fmtMoney(d.net_price)}</td>
       <td>${esc(d.seat||'—')}</td><td>${esc(d.adm_type||'—')}</td>
-      <td>${cleanBundleDisplay(d.app_bundle)}</td><td>${esc(d.country||'—')}</td><td>${esc(d.device_type||'—')}</td>
-    </tr>`).join(''):'<tr><td colspan="11" class="empty">No decisions</td></tr>';
+      <td>${cleanBundleDisplay(d.app_bundle)}</td><td>${esc(d.raw_bundle||'—')}</td><td>${esc(d.country||'—')}</td><td>${esc(d.device_type||'—')}</td>
+    </tr>`).join(''):'<tr><td colspan="12" class="empty">No decisions</td></tr>';
   } catch(e) {}
 }
 

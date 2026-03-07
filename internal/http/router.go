@@ -144,6 +144,7 @@ type AdDecision struct {
 	CampaignID int       `json:"campaign_id,omitempty"`
 	Campaign   string    `json:"campaign,omitempty"`
 	CreativeID string    `json:"creative_id"`
+	SupplyID   int       `json:"supply_source_id,omitempty"`
 	Source     string    `json:"source"`
 	ADomain    string    `json:"adomain"`
 	ADSource   string    `json:"ad_source"`
@@ -154,6 +155,7 @@ type AdDecision struct {
 	DemandEp   string    `json:"demand_endpoint"`
 	Delivery   string    `json:"delivery_status,omitempty"`
 	AppBundle  string    `json:"app_bundle"`
+	RawBundle  string    `json:"raw_bundle,omitempty"`
 	Country    string    `json:"country"`
 	DeviceType string    `json:"device_type"`
 }
@@ -1172,11 +1174,22 @@ func decisionAuditBundle(req *openrtb.BidRequest, tag *SupplyTag) string {
 	return ""
 }
 
-func (s *store) recordAdDecision(req *openrtb.BidRequest, winner *openrtb.Bid, winPrice float64, source, appBundle, demandEp string, campaignID int, campaignName, deliveryStatus string) {
+func decisionAuditRawBundle(req *openrtb.BidRequest) string {
+	if req == nil || req.App == nil {
+		return ""
+	}
+	if bundle := strings.TrimSpace(req.App.Bundle); bundle != "" {
+		return bundle
+	}
+	return strings.TrimSpace(req.App.ID)
+}
+
+func (s *store) recordAdDecision(req *openrtb.BidRequest, winner *openrtb.Bid, winPrice float64, supplyID int, source, appBundle, demandEp string, campaignID int, campaignName, deliveryStatus string) {
 	country := ""
 	if req != nil && req.Device != nil && req.Device.Geo != nil {
 		country = req.Device.Geo.Country
 	}
+	rawBundle := decisionAuditRawBundle(req)
 	demandSource := strings.TrimSpace(demandEp)
 	if demandSource == "" && winner != nil {
 		demandSource = strings.TrimSpace(winner.DemandSrc)
@@ -1221,10 +1234,10 @@ func (s *store) recordAdDecision(req *openrtb.BidRequest, winner *openrtb.Bid, w
 	s.decisionMu.Lock()
 	s.adDecisions = append(s.adDecisions, AdDecision{
 		Time: time.Now(), CampaignID: campaignID, Campaign: campaignName,
-		CreativeID: creativeID, Source: source,
+		CreativeID: creativeID, SupplyID: supplyID, Source: source,
 		ADomain: adomain, Seat: seat,
 		BidPrice: bidPrice, NetPrice: netPrice,
-		AdmType: "vast", AppBundle: appBundle, Country: country, DeviceType: devType,
+		AdmType: "vast", AppBundle: appBundle, RawBundle: rawBundle, Country: country, DeviceType: devType,
 		DemandEp: demandSource, Delivery: deliveryStatus,
 	})
 	if len(s.adDecisions) > 500 {
@@ -2759,6 +2772,10 @@ func handlePipelineServeResult(c *fiber.Ctx, p *pipeline.Pipeline, metrics *moni
 
 	auditSource := decisionAuditSource(req, sourceTag, decisionSource)
 	auditBundle := decisionAuditBundle(req, sourceTag)
+	auditSupplyID := 0
+	if sourceTag != nil {
+		auditSupplyID = sourceTag.ID
+	}
 
 	if result.NoBid || result.Winner == nil || strings.TrimSpace(result.VAST) == "" {
 		return c.Type("xml").SendString(vast.BuildNoAd())
@@ -2789,7 +2806,7 @@ func handlePipelineServeResult(c *fiber.Ctx, p *pipeline.Pipeline, metrics *moni
 		cm.SpendMu.Unlock()
 	}
 
-	s.recordAdDecision(req, result.Winner, result.WinPrice, auditSource, auditBundle, result.AdapterID, campaignID, campaignName, deliveryStatus)
+	s.recordAdDecision(req, result.Winner, result.WinPrice, auditSupplyID, auditSource, auditBundle, result.AdapterID, campaignID, campaignName, deliveryStatus)
 	p.FinalizeDelivery(result)
 
 	return c.Type("xml").SendString(result.VAST)

@@ -140,6 +140,18 @@ func (a *ORTBAdapter) applyEndpointConfig(req *openrtb.BidRequest) *openrtb.BidR
 	// Shallow copy the request
 	clonedReq := *req
 
+	if req.App != nil {
+		appCopy := *req.App
+		cleanBundle := openrtb.CleanBundleValue(req.App.Bundle, req.App.ID, req.App.StoreURL)
+		appCopy.Bundle = cleanBundle
+		if canonicalID := openrtb.CanonicalBundleValue(req.App.ID); canonicalID != "" {
+			appCopy.ID = canonicalID
+		} else {
+			appCopy.ID = cleanBundle
+		}
+		clonedReq.App = &appCopy
+	}
+
 	if len(req.Imp) > 0 {
 		clonedReq.Imp = make([]openrtb.Imp, len(req.Imp))
 		copy(clonedReq.Imp, req.Imp)
