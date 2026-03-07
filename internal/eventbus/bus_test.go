@@ -31,6 +31,43 @@ func TestPublishAndPublishSyncDispatchHandlers(t *testing.T) {
 	}
 }
 
+func TestCloseWhilePublishSyncIsPending(t *testing.T) {
+	b := newBus(1, 1)
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+
+	b.Subscribe(EvtAdRequest, func(evt Event) {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-release
+	})
+
+	b.Publish(Event{Type: EvtAdRequest})
+	awaitSignal(t, started)
+
+	b.Publish(Event{Type: EvtAdRequest})
+
+	publishDone := make(chan struct{})
+	go func() {
+		defer close(publishDone)
+		b.PublishSync(Event{Type: EvtAdRequest})
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+
+	closeDone := make(chan struct{})
+	go func() {
+		b.Close()
+		close(closeDone)
+	}()
+
+	close(release)
+	awaitSignal(t, publishDone)
+	awaitSignal(t, closeDone)
+}
+
 func awaitSignal(t *testing.T, done <-chan struct{}) {
 	t.Helper()
 	select {

@@ -18,19 +18,6 @@ func Request(req *openrtb.BidRequest) error {
 	if len(req.Imp) == 0 {
 		return fmt.Errorf("missing impressions")
 	}
-	imp := req.Imp[0]
-	if imp.Video == nil {
-		return fmt.Errorf("missing video impression")
-	}
-	if imp.Video.W == nil || imp.Video.H == nil || *imp.Video.W <= 0 || *imp.Video.H <= 0 {
-		return fmt.Errorf("invalid video size")
-	}
-	if imp.Video.MaxDuration > 0 && imp.Video.MinDuration > imp.Video.MaxDuration {
-		return fmt.Errorf("invalid video duration range")
-	}
-	if len(imp.Video.MIMEs) == 0 {
-		return fmt.Errorf("missing video mimes")
-	}
 	if req.Device == nil {
 		return fmt.Errorf("missing device")
 	}
@@ -50,6 +37,31 @@ func Request(req *openrtb.BidRequest) error {
 		if bundle == "" && appID == "" {
 			return fmt.Errorf("missing app bundle/id")
 		}
+	}
+
+	videoImpIndex := -1
+	for i := range req.Imp {
+		if req.Imp[i].Video != nil {
+			videoImpIndex = i
+			break
+		}
+	}
+	if videoImpIndex < 0 {
+		return fmt.Errorf("missing video impression")
+	}
+	if videoImpIndex != 0 {
+		req.Imp[0], req.Imp[videoImpIndex] = req.Imp[videoImpIndex], req.Imp[0]
+	}
+
+	video := req.Imp[0].Video
+	if video.W == nil || video.H == nil || *video.W <= 0 || *video.H <= 0 {
+		return fmt.Errorf("invalid video size")
+	}
+	if video.MaxDuration > 0 && video.MinDuration > video.MaxDuration {
+		return fmt.Errorf("invalid video duration range")
+	}
+	if len(video.MIMEs) == 0 {
+		return fmt.Errorf("missing video mimes")
 	}
 	return nil
 }

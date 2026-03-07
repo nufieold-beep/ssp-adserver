@@ -2690,7 +2690,6 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 
 func handlePipelineServeResult(c *fiber.Ctx, p *pipeline.Pipeline, metrics *monitor.Metrics, s *store, req *openrtb.BidRequest, result *pipeline.Result, decisionSource string) error {
 	if result.Error != nil {
-		metrics.RecordError()
 		return c.Status(500).JSON(fiber.Map{"error": result.Error.Error()})
 	}
 

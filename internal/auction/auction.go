@@ -26,6 +26,14 @@ var (
 	billableNotices  = make(map[string]billableNoticeEntry)
 )
 
+func pruneExpiredBillableNoticesLocked(now time.Time) {
+	for bidID, entry := range billableNotices {
+		if !entry.expires.After(now) {
+			delete(billableNotices, bidID)
+		}
+	}
+}
+
 // Run executes the full auction. auctionType is "first_price" or "second_price".
 func Run(bids []openrtb.Bid, floor float64, auctionType string) *AuctionResult {
 	result := &AuctionResult{}
@@ -119,12 +127,14 @@ func RegisterBillableNotice(bid *openrtb.Bid) {
 	if bid == nil || bid.ID == "" || bid.BURL == "" {
 		return
 	}
+	now := time.Now()
 	entry := billableNoticeEntry{
 		url:     bid.SubstituteMacros(bid.BURL),
-		expires: time.Now().Add(30 * time.Minute),
+		expires: now.Add(30 * time.Minute),
 	}
 
 	billableNoticeMu.Lock()
+	pruneExpiredBillableNoticesLocked(now)
 	billableNotices[bid.ID] = entry
 	billableNoticeMu.Unlock()
 }
@@ -134,8 +144,10 @@ func FireBillingNoticeByBidID(bidID string) {
 	if bidID == "" {
 		return
 	}
+	now := time.Now()
 
 	billableNoticeMu.Lock()
+	pruneExpiredBillableNoticesLocked(now)
 	entry, ok := billableNotices[bidID]
 	if ok {
 		delete(billableNotices, bidID)
@@ -143,9 +155,6 @@ func FireBillingNoticeByBidID(bidID string) {
 	billableNoticeMu.Unlock()
 
 	if !ok {
-		return
-	}
-	if time.Now().After(entry.expires) {
 		return
 	}
 	go fireURL(entry.url)

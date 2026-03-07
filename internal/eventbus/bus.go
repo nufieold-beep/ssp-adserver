@@ -49,6 +49,7 @@ type queuedEvent struct {
 type Bus struct {
 	mu        sync.RWMutex
 	handlers  map[string][]Handler
+	queueMu   sync.RWMutex
 	queue     chan queuedEvent
 	workerWG  sync.WaitGroup
 	closed    atomic.Bool
@@ -124,8 +125,10 @@ func (b *Bus) PublishSync(evt Event) {
 
 func (b *Bus) Close() {
 	b.closeOnce.Do(func() {
+		b.queueMu.Lock()
 		b.closed.Store(true)
 		close(b.queue)
+		b.queueMu.Unlock()
 		b.workerWG.Wait()
 	})
 }
@@ -143,7 +146,9 @@ func (b *Bus) snapshotHandlers(eventType string) []Handler {
 }
 
 func (b *Bus) dispatch(task queuedEvent, wait bool) {
+	b.queueMu.RLock()
 	if b.closed.Load() {
+		b.queueMu.RUnlock()
 		if task.done != nil {
 			task.done.Done()
 		}
@@ -152,12 +157,15 @@ func (b *Bus) dispatch(task queuedEvent, wait bool) {
 
 	if wait {
 		b.queue <- task
+		b.queueMu.RUnlock()
 		return
 	}
 
 	select {
 	case b.queue <- task:
+		b.queueMu.RUnlock()
 	default:
+		b.queueMu.RUnlock()
 		b.runTask(task)
 	}
 }
