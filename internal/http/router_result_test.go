@@ -81,6 +81,17 @@ func TestDecisionAuditBundleDerivesFromStoreURLWhenRequestBundleIsJunk(t *testin
 	}
 }
 
+func TestDecisionAuditBundleRejectsEncodedURLBundleAndUsesStoreURL(t *testing.T) {
+	req := &openrtb.BidRequest{App: &openrtb.App{
+		Bundle:   "https3a2f2fwww.vizio.com2fen2fsmart.tv.apps3fappname3ddantdm",
+		StoreURL: "https://www.vizio.com/en/smart-tv-apps?appName=dantdm",
+	}}
+
+	if got := decisionAuditBundle(req, nil); got != "vizio.dantdm" {
+		t.Fatalf("expected vizio bundle from store URL fallback, got %q", got)
+	}
+}
+
 func TestDecisionAuditBundleSuppressesJunkWithoutFallback(t *testing.T) {
 	req := &openrtb.BidRequest{App: &openrtb.App{Bundle: "1022720soccha", ID: "1022720soccha"}}
 

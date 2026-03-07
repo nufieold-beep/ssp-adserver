@@ -142,13 +142,7 @@ func (a *ORTBAdapter) applyEndpointConfig(req *openrtb.BidRequest) *openrtb.BidR
 
 	if req.App != nil {
 		appCopy := *req.App
-		cleanBundle := openrtb.CleanBundleValue(req.App.Bundle, req.App.ID, req.App.StoreURL)
-		appCopy.Bundle = cleanBundle
-		if canonicalID := openrtb.CanonicalBundleValue(req.App.ID); canonicalID != "" {
-			appCopy.ID = canonicalID
-		} else {
-			appCopy.ID = cleanBundle
-		}
+		appCopy.StoreURL = openrtb.DecodeStoreURLValue(req.App.StoreURL)
 		clonedReq.App = &appCopy
 	}
 

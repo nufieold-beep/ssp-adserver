@@ -130,10 +130,31 @@ func TestBuildFromHTTPPrefersQueryParamsOverHeaders(t *testing.T) {
 	}
 }
 
+func TestDecodeStoreURLValueDecodesEncodedURL(t *testing.T) {
+	got := DecodeStoreURLValue("https%253A%252F%252Fapps.apple.com%252Fus%252Fapp%252Fexample-tv%252Fid1089249069")
+	if got != "https://apps.apple.com/us/app/example-tv/id1089249069" {
+		t.Fatalf("expected encoded store URL to be decoded, got %q", got)
+	}
+}
+
+func TestDecodeStoreURLValuePreservesValidURL(t *testing.T) {
+	got := DecodeStoreURLValue("https://store.example.com/apps/example-tv")
+	if got != "https://store.example.com/apps/example-tv" {
+		t.Fatalf("expected valid store URL to be preserved, got %q", got)
+	}
+}
+
 func TestCleanBundleValueDerivesCanonicalBundleFromStoreURL(t *testing.T) {
 	got := CleanBundleValue("B00V3UTTPSernsp", "", "https://play.google.com/store/apps/details?id=com.frndlytv.channel")
 	if got != "com.frndlytv.channel" {
 		t.Fatalf("expected canonical bundle from store URL, got %q", got)
+	}
+}
+
+func TestCleanBundleValueDerivesPlatformBundleFromVizioStoreURL(t *testing.T) {
+	got := CleanBundleValue("https3a2f2fwww.vizio.com2fen2fsmart.tv.apps3fappname3ddantdm", "501481973_82926669", "https://www.vizio.com/en/smart-tv-apps?appName=dantdm")
+	if got != "vizio.dantdm" {
+		t.Fatalf("expected vizio platform bundle from store URL, got %q", got)
 	}
 }
 
@@ -151,10 +172,63 @@ func TestBundleFromStoreURLUsesCustomDomainHost(t *testing.T) {
 	}
 }
 
-func TestCanonicalBundleValueRejectsLowConfidenceTwoSegmentBundle(t *testing.T) {
-	got := CanonicalBundleValue("vizio.truliyt")
+func TestBundleFromStoreURLDerivesAppleTVStoreIDFromPath(t *testing.T) {
+	got := BundleFromStoreURL("https://apps.apple.com/us/app/example-tv/id1089249069")
+	if got != "1089249069" {
+		t.Fatalf("expected Apple App Store ID from path, got %q", got)
+	}
+}
+
+func TestCanonicalBundleValueAcceptsTwoSegmentBundleFromTrafficSample(t *testing.T) {
+	got := CanonicalBundleValue("custom.truliyt")
+	if got != "custom.truliyt" {
+		t.Fatalf("expected two-segment bundle to be accepted, got %q", got)
+	}
+}
+
+func TestCanonicalBundleValueAcceptsTrustedCTVPlatformBundle(t *testing.T) {
+	got := CanonicalBundleValue("vizio.dantdm")
+	if got != "vizio.dantdm" {
+		t.Fatalf("expected trusted CTV platform bundle to be accepted, got %q", got)
+	}
+}
+
+func TestCanonicalBundleValueAcceptsSamplePlatformBundles(t *testing.T) {
+	for _, value := range []string{"directv.stb", "firetv.ifoodtv", "roku.lifetime", "cox.filmrise", "tubitv.amazon", "vizio.dantdm", "samsung.scn.103"} {
+		if got := CanonicalBundleValue(value); got != value {
+			t.Fatalf("expected platform bundle %q to be accepted, got %q", value, got)
+		}
+	}
+}
+
+func TestCanonicalBundleValueAcceptsNumericStoreIDs(t *testing.T) {
+	for _, value := range []string{"14", "2285", "1089249069", "330879884"} {
+		if got := CanonicalBundleValue(value); got != value {
+			t.Fatalf("expected numeric store bundle %q to be accepted, got %q", value, got)
+		}
+	}
+}
+
+func TestCanonicalBundleValueAcceptsAmazonAndLGStoreIDs(t *testing.T) {
+	for _, value := range []string{"b00v3uttps", "g00009197740", "1e913e1b06ead0b66e30b6867bf63549"} {
+		if got := CanonicalBundleValue(value); got != value {
+			t.Fatalf("expected opaque store bundle %q to be accepted, got %q", value, got)
+		}
+	}
+}
+
+func TestCanonicalBundleValueAcceptsSingleTokenTVAppNames(t *testing.T) {
+	for _, value := range []string{"onefox", "tinyhousenation"} {
+		if got := CanonicalBundleValue(value); got != value {
+			t.Fatalf("expected single-token TV app bundle %q to be accepted, got %q", value, got)
+		}
+	}
+}
+
+func TestCanonicalBundleValueRejectsEncodedURLLikeBundle(t *testing.T) {
+	got := CanonicalBundleValue("https3a2f2fwww.vizio.com2fen2fsmart.tv.apps3fappname3ddantdm")
 	if got != "" {
-		t.Fatalf("expected low-confidence two-segment bundle to be rejected, got %q", got)
+		t.Fatalf("expected encoded URL-like bundle to be rejected, got %q", got)
 	}
 }
 

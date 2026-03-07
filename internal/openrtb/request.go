@@ -305,6 +305,10 @@ func BundleFromStoreURL(raw string) string {
 		return ""
 	}
 
+	if candidate := bundleFromPlatformStoreURL(u); candidate != "" {
+		return candidate
+	}
+
 	for _, key := range []string{"id", "app_id", "appid", "bundle", "bundle_id", "package", "package_name", "pkg"} {
 		if candidate := CanonicalBundleValue(u.Query().Get(key)); candidate != "" {
 			return candidate
@@ -312,16 +316,48 @@ func BundleFromStoreURL(raw string) string {
 	}
 
 	for _, segment := range strings.Split(u.Path, "/") {
-		if candidate := CanonicalBundleValue(segment); candidate != "" {
+		if candidate := canonicalStorePathSegment(segment); candidate != "" {
 			return candidate
 		}
 	}
 
 	host := normalizeCleanBundleValue(trimCommonHostPrefix(u.Hostname()))
 	if host == "" || isGenericStoreHost(host) || !looksCanonicalCleanBundle(host) {
+		for _, segment := range strings.Split(u.Path, "/") {
+			if candidate := CanonicalBundleValue(segment); candidate != "" {
+				return candidate
+			}
+		}
 		return ""
 	}
 	return host
+}
+
+// DecodeStoreURLValue decodes a fully encoded app store URL before it is
+// forwarded to downstream ORTB endpoints.
+func DecodeStoreURLValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || looksHTTPStoreURL(value) {
+		return value
+	}
+
+	decoded := value
+	for i := 0; i < 3; i++ {
+		next, err := url.QueryUnescape(decoded)
+		if err != nil {
+			break
+		}
+		next = strings.TrimSpace(next)
+		if next == "" || next == decoded {
+			break
+		}
+		decoded = next
+		if looksHTTPStoreURL(decoded) {
+			return decoded
+		}
+	}
+
+	return value
 }
 
 // CleanBundleValue returns the best clean bundle candidate available for
@@ -342,6 +378,9 @@ func CleanBundleValue(bundle, appID, storeURL string) string {
 func normalizeCleanBundleValue(value string) string {
 	value = strings.TrimSpace(strings.ToLower(value))
 	if value == "" {
+		return ""
+	}
+	if looksEncodedURLLikeBundleValue(value) {
 		return ""
 	}
 
@@ -383,6 +422,13 @@ func normalizeCleanBundleValue(value string) string {
 }
 
 func looksCanonicalCleanBundle(value string) bool {
+	if value == "" {
+		return false
+	}
+	if !strings.Contains(value, ".") {
+		return looksSingleTokenBundleValue(value)
+	}
+
 	parts := strings.Split(value, ".")
 	if len(parts) < 2 {
 		return false
@@ -397,7 +443,7 @@ func looksCanonicalCleanBundle(value string) bool {
 			alphaParts++
 		}
 	}
-	if alphaParts < 2 {
+	if alphaParts < 1 {
 		return false
 	}
 
@@ -405,7 +451,30 @@ func looksCanonicalCleanBundle(value string) bool {
 		return true
 	}
 
-	return isKnownBundleRoot(parts[0]) && len(parts[1]) >= 3 && containsAlpha(parts[1])
+	return len(parts[0]) >= 2 && len(parts[1]) >= 2
+}
+
+func looksSingleTokenBundleValue(value string) bool {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "" {
+		return false
+	}
+	if isAllDigits(value) {
+		return true
+	}
+	if len(value) == 10 && strings.HasPrefix(value, "b") && isAlphaNumeric(value) {
+		return true
+	}
+	if len(value) >= 8 && strings.HasPrefix(value, "g") && isAllDigits(value[1:]) {
+		return true
+	}
+	if len(value) == 32 && isHexToken(value) {
+		return true
+	}
+	if isAlphaOnly(value) && len(value) >= 3 {
+		return true
+	}
+	return false
 }
 
 func isSyntheticGeneratedBundle(value string) bool {
@@ -425,13 +494,138 @@ func containsAlpha(value string) bool {
 	return false
 }
 
+func isAlphaOnly(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if r < 'a' || r > 'z' {
+			return false
+		}
+	}
+	return true
+}
+
+func isAllDigits(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func isAlphaNumeric(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= '0' && r <= '9':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func isHexToken(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		switch {
+		case r >= '0' && r <= '9':
+		case r >= 'a' && r <= 'f':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 func isKnownBundleRoot(value string) bool {
 	switch strings.TrimSpace(strings.ToLower(value)) {
-	case "app", "co", "com", "dev", "io", "me", "media", "net", "org", "tv":
+	case "amazon", "app", "co", "com", "dev", "io", "lgappstv", "me", "media", "net", "org", "roku", "samsung", "tv", "vizio":
 		return true
 	default:
 		return false
 	}
+}
+
+func bundleFromPlatformStoreURL(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+
+	host := trimCommonHostPrefix(u.Hostname())
+	prefix := platformStoreBundlePrefix(host)
+	if prefix == "" {
+		return ""
+	}
+
+	for _, key := range []string{"appName", "appname", "app_name", "name", "title"} {
+		if token := normalizeBundleToken(u.Query().Get(key)); token != "" && token != "unknown" {
+			return prefix + "." + token
+		}
+	}
+
+	return ""
+}
+
+func canonicalStorePathSegment(segment string) string {
+	segment = strings.TrimSpace(strings.ToLower(segment))
+	if segment == "" {
+		return ""
+	}
+	if strings.HasPrefix(segment, "id") {
+		candidate := strings.TrimPrefix(segment, "id")
+		if isAllDigits(candidate) {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func platformStoreBundlePrefix(host string) string {
+	host = trimCommonHostPrefix(host)
+	switch {
+	case host == "vizio.com", strings.HasSuffix(host, ".vizio.com"):
+		return "vizio"
+	case host == "roku.com", strings.HasSuffix(host, ".roku.com"):
+		return "roku"
+	case host == "samsung.com", strings.HasSuffix(host, ".samsung.com"):
+		return "samsung"
+	case host == "amazon.com", strings.HasSuffix(host, ".amazon.com"):
+		return "amazon"
+	case host == "lgappstv.com", strings.HasSuffix(host, ".lgappstv.com"):
+		return "lgappstv"
+	default:
+		return ""
+	}
+}
+
+func looksEncodedURLLikeBundleValue(value string) bool {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "" {
+		return false
+	}
+	if strings.Contains(value, "://") || strings.Contains(value, "%3a%2f%2f") || strings.Contains(value, "3a2f2f") {
+		return true
+	}
+	if strings.HasPrefix(value, "http") && (strings.Contains(value, "%2f") || strings.Contains(value, "2f")) {
+		return true
+	}
+	for _, marker := range []string{".com2f", ".net2f", ".org2f", ".tv2f", "appname3d", "appid3d"} {
+		if strings.Contains(value, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func trimCommonHostPrefix(host string) string {
@@ -459,6 +653,14 @@ func isGenericStoreHost(host string) bool {
 	default:
 		return false
 	}
+}
+
+func looksHTTPStoreURL(value string) bool {
+	u, err := url.Parse(value)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return strings.EqualFold(u.Scheme, "http") || strings.EqualFold(u.Scheme, "https")
 }
 
 func requestValue(c *fiber.Ctx, queries map[string]string, queryKeys []string, headerKeys ...string) string {
