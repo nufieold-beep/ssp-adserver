@@ -119,6 +119,15 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 	lmt := queryIntMap(queries, 0, "lmt")
 	ip := queryMap(queries, "ip", "uip")
 	if ip == "" {
+		ip = c.Get("X-Forwarded-For")
+		if ip == "" {
+			ip = c.Get("X-Real-IP")
+		}
+		if strings.Contains(ip, ",") {
+			ip = strings.TrimSpace(strings.SplitN(ip, ",", 2)[0])
+		}
+	}
+	if ip == "" {
 		ip = c.IP()
 	}
 	ua := queryMap(queries, "ua")

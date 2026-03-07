@@ -126,17 +126,34 @@ func NewClient(timeout time.Duration) *http.Client {
 // SetORTBHeaders sets the standard OpenRTB 2.6 request headers.
 func SetORTBHeaders(httpReq *http.Request, requestID, userAgent, clientIP string) {
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "application/json")
 	httpReq.Header.Set("X-Openrtb-Version", "2.6")
-	httpReq.Header.Set("Connection", "Keep-Alive")
-	httpReq.Header.Set("Cache-Control", "no-store")
 	httpReq.Header.Set("X-Request-ID", requestID)
-	if userAgent != "" {
-		httpReq.Header.Set("User-Agent", userAgent)
+
+	if strings.TrimSpace(userAgent) == "" {
+		userAgent = "ssp-ortb/2.6"
 	}
-	if clientIP != "" {
-		httpReq.Header.Set("X-Forwarded-For", clientIP)
+	httpReq.Header.Set("User-Agent", userAgent)
+
+	if ip := firstForwardedIP(clientIP); ip != "" {
+		httpReq.Header.Set("X-Forwarded-For", ip)
 	}
+
+	// Ensure Host header matches the demand endpoint authority.
+	if httpReq.URL != nil && httpReq.URL.Host != "" {
+		httpReq.Host = httpReq.URL.Host
+	}
+}
+
+func firstForwardedIP(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parts := strings.Split(raw, ",")
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(parts[0])
 }
 
 // JSONBufPool reuses byte buffers for JSON marshaling in the hot path.
