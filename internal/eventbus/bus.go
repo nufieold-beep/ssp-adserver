@@ -46,6 +46,15 @@ func New() *Bus {
 	return &Bus{handlers: make(map[string][]Handler)}
 }
 
+// HasSubscribers reports whether an event type currently has at least one
+// subscriber. Used on request hot paths to avoid building event payload maps
+// when no consumer is listening.
+func (b *Bus) HasSubscribers(eventType string) bool {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return len(b.handlers[eventType]) > 0
+}
+
 // Subscribe registers a handler for a specific event type.
 func (b *Bus) Subscribe(eventType string, h Handler) {
 	b.mu.Lock()

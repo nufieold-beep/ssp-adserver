@@ -38,8 +38,8 @@ func NewORTBAdapter(cfg *AdapterConfig) *ORTBAdapter {
 		gzipSupport:   cfg.GZIPSupport,
 		removePChain:  cfg.RemovePChain,
 		schainEnabled: cfg.SChainEnabled,
-		badv:          cfg.BAdv,
-		bcat:          cfg.BCat,
+		badv:          sanitizeStringList(cfg.BAdv),
+		bcat:          sanitizeStringList(cfg.BCat),
 		client:        httputil.NewClient(t),
 	}
 }
@@ -140,27 +140,16 @@ func (a *ORTBAdapter) applyEndpointConfig(req *openrtb.BidRequest) *openrtb.BidR
 
 	// Merge BAdv: combine request-level + endpoint-level blocked advertisers
 	if len(req.BAdv) > 0 || len(a.badv) > 0 {
-		merged := make([]string, 0, len(req.BAdv)+len(a.badv))
-		merged = append(merged, req.BAdv...)
-		merged = append(merged, a.badv...)
-		clonedReq.BAdv = sanitizeStringList(merged)
+		clonedReq.BAdv = mergeSanitizedLists(req.BAdv, a.badv)
 	}
 
 	// Merge BCat: combine request-level + endpoint-level blocked categories
 	if len(req.BCat) > 0 || len(a.bcat) > 0 {
-		merged := make([]string, 0, len(req.BCat)+len(a.bcat))
-		merged = append(merged, req.BCat...)
-		merged = append(merged, a.bcat...)
-		clonedReq.BCat = sanitizeStringList(merged)
+		clonedReq.BCat = mergeSanitizedLists(req.BCat, a.bcat)
 	}
 
 	// Supply chain: remove ext.schain if not enabled for this endpoint
-	if !a.schainEnabled && clonedReq.Source != nil && clonedReq.Source.SChain != nil {
-		clonedReq.Source = nil
-	}
-
-	// Remove PChain: strip schain nodes (pchain removal)
-	if a.removePChain && clonedReq.Source != nil && clonedReq.Source.SChain != nil {
+	if (!a.schainEnabled || a.removePChain) && clonedReq.Source != nil && clonedReq.Source.SChain != nil {
 		clonedReq.Source = nil
 	}
 
@@ -183,6 +172,43 @@ func sanitizeStringList(in []string) []string {
 		}
 		seen[v] = struct{}{}
 		out = append(out, v)
+	}
+	return out
+}
+
+func mergeSanitizedLists(requestValues, staticValues []string) []string {
+	if len(requestValues) == 0 {
+		return staticValues
+	}
+
+	out := make([]string, 0, len(requestValues)+len(staticValues))
+	seen := make(map[string]struct{}, len(requestValues)+len(staticValues))
+
+	for _, raw := range requestValues {
+		v := normalizeListToken(raw)
+		if v == "" {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+
+	for _, v := range staticValues {
+		if v == "" {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

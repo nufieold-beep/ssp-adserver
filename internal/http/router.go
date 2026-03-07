@@ -166,11 +166,12 @@ type store struct {
 	advertisers      map[int]*Advertiser
 	nextAdvertiserID int
 
-	supplyTags      map[int]*SupplyTag
-	nextSupplyTagID int
-	supplyBySlotID  map[string]*SupplyTag
-	supplyByName    map[string]*SupplyTag
-	supplyByIDStr   map[string]*SupplyTag
+	supplyTags           map[int]*SupplyTag
+	nextSupplyTagID      int
+	activeSupplyTagCount int
+	supplyBySlotID       map[string]*SupplyTag
+	supplyByName         map[string]*SupplyTag
+	supplyByIDStr        map[string]*SupplyTag
 
 	demandEndpoints      map[int]*DemandEndpoint
 	nextDemandEndpointID int
@@ -178,9 +179,13 @@ type store struct {
 	demandVastTags      map[int]*DemandVastTag
 	nextDemandVastTagID int
 
-	mappings      map[int]*SDMapping
-	nextMappingID int
-	mappingsBySID map[int][]*SDMapping
+	mappings               map[int]*SDMapping
+	nextMappingID          int
+	mappingsBySID          map[int][]*SDMapping
+	mappingAdapterIDsBySID map[int][]string
+
+	activeCampaignByDomain map[string]*Campaign
+	activeCampaignFallback *Campaign
 
 	targetingRules map[int]*TargetingRule
 	nextRuleID     int
@@ -218,29 +223,32 @@ const runtimeStateFileName = "runtime_state.json"
 
 func newStore() *store {
 	return &store{
-		campaigns:            make(map[int]*Campaign),
-		nextCampaignID:       1,
-		advertisers:          make(map[int]*Advertiser),
-		nextAdvertiserID:     1,
-		supplyTags:           make(map[int]*SupplyTag),
-		nextSupplyTagID:      1,
-		supplyBySlotID:       make(map[string]*SupplyTag),
-		supplyByName:         make(map[string]*SupplyTag),
-		supplyByIDStr:        make(map[string]*SupplyTag),
-		demandEndpoints:      make(map[int]*DemandEndpoint),
-		nextDemandEndpointID: 1,
-		demandVastTags:       make(map[int]*DemandVastTag),
-		nextDemandVastTagID:  1,
-		mappings:             make(map[int]*SDMapping),
-		nextMappingID:        1,
-		mappingsBySID:        make(map[int][]*SDMapping),
-		targetingRules:       make(map[int]*TargetingRule),
-		nextRuleID:           1,
-		budgetDayKey:         time.Now().UTC().Format("2006-01-02"),
-		frequencyByKey:       make(map[string]int),
-		dashboardUser:        "admin",
-		dashboardPass:        "admin",
-		dashboardSessions:    make(map[string]time.Time),
+		campaigns:              make(map[int]*Campaign),
+		nextCampaignID:         1,
+		advertisers:            make(map[int]*Advertiser),
+		nextAdvertiserID:       1,
+		supplyTags:             make(map[int]*SupplyTag),
+		nextSupplyTagID:        1,
+		activeSupplyTagCount:   0,
+		supplyBySlotID:         make(map[string]*SupplyTag),
+		supplyByName:           make(map[string]*SupplyTag),
+		supplyByIDStr:          make(map[string]*SupplyTag),
+		demandEndpoints:        make(map[int]*DemandEndpoint),
+		nextDemandEndpointID:   1,
+		demandVastTags:         make(map[int]*DemandVastTag),
+		nextDemandVastTagID:    1,
+		mappings:               make(map[int]*SDMapping),
+		nextMappingID:          1,
+		mappingsBySID:          make(map[int][]*SDMapping),
+		mappingAdapterIDsBySID: make(map[int][]string),
+		activeCampaignByDomain: make(map[string]*Campaign),
+		targetingRules:         make(map[int]*TargetingRule),
+		nextRuleID:             1,
+		budgetDayKey:           time.Now().UTC().Format("2006-01-02"),
+		frequencyByKey:         make(map[string]int),
+		dashboardUser:          "admin",
+		dashboardPass:          "admin",
+		dashboardSessions:      make(map[string]time.Time),
 	}
 }
 
@@ -452,6 +460,7 @@ func (s *store) loadSupplyDemandState(statePath string) error {
 
 	s.rebuildSupplyIndexLocked()
 	s.rebuildMappingIndexLocked()
+	s.rebuildCampaignIndexLocked()
 	return nil
 }
 
@@ -589,10 +598,12 @@ func (s *store) rebuildSupplyIndexLocked() {
 	s.supplyBySlotID = make(map[string]*SupplyTag, len(s.supplyTags))
 	s.supplyByName = make(map[string]*SupplyTag, len(s.supplyTags))
 	s.supplyByIDStr = make(map[string]*SupplyTag, len(s.supplyTags))
+	s.activeSupplyTagCount = 0
 	for _, t := range s.supplyTags {
 		if t.Status != 1 {
 			continue
 		}
+		s.activeSupplyTagCount++
 		if t.SlotID != "" {
 			s.supplyBySlotID[t.SlotID] = t
 		}
@@ -607,23 +618,89 @@ func (s *store) rebuildSupplyIndexLocked() {
 // Caller must hold s.mu Lock/RLock as appropriate.
 func (s *store) rebuildMappingIndexLocked() {
 	s.mappingsBySID = make(map[int][]*SDMapping)
+	s.mappingAdapterIDsBySID = make(map[int][]string)
 	for _, m := range s.mappings {
 		if m.Status != 1 {
 			continue
 		}
 		s.mappingsBySID[m.SupplyID] = append(s.mappingsBySID[m.SupplyID], m)
+		if adapterID, ok := mappingAdapterIDForTypeAndDemandID(m.Type, m.DemandID); ok {
+			s.mappingAdapterIDsBySID[m.SupplyID] = append(s.mappingAdapterIDsBySID[m.SupplyID], adapterID)
+		}
+	}
+
+	for sid, ids := range s.mappingAdapterIDsBySID {
+		if len(ids) <= 1 {
+			continue
+		}
+		seen := make(map[string]struct{}, len(ids))
+		deduped := make([]string, 0, len(ids))
+		for _, id := range ids {
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			deduped = append(deduped, id)
+		}
+		s.mappingAdapterIDsBySID[sid] = deduped
 	}
 }
 
 func (s *store) hasActiveSupplyTags() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	for _, t := range s.supplyTags {
-		if t.Status == 1 {
-			return true
+	return s.activeSupplyTagCount > 0
+}
+
+func (s *store) mappedAdapterIDsForSupplyID(sid int) []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	ids := s.mappingAdapterIDsBySID[sid]
+	if len(ids) == 0 {
+		return nil
+	}
+	out := make([]string, len(ids))
+	copy(out, ids)
+	return out
+}
+
+func mappingAdapterIDForTypeAndDemandID(mappingType string, demandID int) (string, bool) {
+	if demandID <= 0 {
+		return "", false
+	}
+	switch strings.ToLower(strings.TrimSpace(mappingType)) {
+	case "ortb":
+		return "demand-ep-" + strconv.Itoa(demandID), true
+	case "vast":
+		return "demand-vast-" + strconv.Itoa(demandID), true
+	default:
+		return "", false
+	}
+}
+
+func (s *store) rebuildCampaignIndexLocked() {
+	s.activeCampaignByDomain = make(map[string]*Campaign)
+	s.activeCampaignFallback = nil
+
+	for _, campaign := range s.campaigns {
+		if campaign.Status != 1 {
+			continue
+		}
+
+		domains := splitDomains(campaign.ADomain)
+		if len(domains) == 0 {
+			if s.activeCampaignFallback == nil || campaign.ID < s.activeCampaignFallback.ID {
+				s.activeCampaignFallback = campaign
+			}
+			continue
+		}
+
+		for _, domain := range domains {
+			if existing, ok := s.activeCampaignByDomain[domain]; !ok || campaign.ID < existing.ID {
+				s.activeCampaignByDomain[domain] = campaign
+			}
 		}
 	}
-	return false
 }
 
 // lookupActiveSupplyTagByKey checks whether a tag name/slot_id/id matches
@@ -831,31 +908,14 @@ func (s *store) campaignFrequencyUsedLocked(campaignID int) int {
 func (s *store) selectCampaignForWinnerLocked(winner *openrtb.Bid) *Campaign {
 	winnerDomain := ""
 	if winner != nil && len(winner.ADomain) > 0 {
-		winnerDomain = winner.ADomain[0]
+		winnerDomain = normalizeDomainValue(winner.ADomain[0])
 	}
-
-	var matched *Campaign
-	var fallback *Campaign
-	for _, campaign := range s.campaigns {
-		if campaign.Status != 1 {
-			continue
-		}
-		if strings.TrimSpace(campaign.ADomain) == "" {
-			if fallback == nil || campaign.ID < fallback.ID {
-				fallback = campaign
-			}
-			continue
-		}
-		if domainMatchesCampaign(campaign.ADomain, winnerDomain) {
-			if matched == nil || campaign.ID < matched.ID {
-				matched = campaign
-			}
+	if winnerDomain != "" {
+		if matched, ok := s.activeCampaignByDomain[winnerDomain]; ok {
+			return matched
 		}
 	}
-	if matched != nil {
-		return matched
-	}
-	return fallback
+	return s.activeCampaignFallback
 }
 
 func (s *store) reserveCampaignDelivery(req *openrtb.BidRequest, winner *openrtb.Bid, winPrice float64) (int, string, string, bool) {
@@ -1250,6 +1310,7 @@ func registerCampaignRoutes(app *fiber.App, s *store, auth fiber.Handler) {
 			camp.FrequencyCap = 0
 		}
 		s.campaigns[camp.ID] = &camp
+		s.rebuildCampaignIndexLocked()
 		if err := s.writeSupplyDemandStateLocked(); err != nil {
 			s.mu.Unlock()
 			return c.Status(500).JSON(fiber.Map{"error": "Failed to persist runtime state"})
@@ -1313,6 +1374,8 @@ func registerCampaignRoutes(app *fiber.App, s *store, auth fiber.Handler) {
 			camp.PacingEnabled = update.PacingEnabled
 		}
 
+		s.rebuildCampaignIndexLocked()
+
 		if err := s.writeSupplyDemandStateLocked(); err != nil {
 			return c.Status(500).JSON(fiber.Map{"error": "Failed to persist runtime state"})
 		}
@@ -1337,6 +1400,7 @@ func registerCampaignRoutes(app *fiber.App, s *store, auth fiber.Handler) {
 			return c.Status(404).JSON(fiber.Map{"error": "Not found"})
 		}
 		camp.Status = body.Status
+		s.rebuildCampaignIndexLocked()
 		if err := s.writeSupplyDemandStateLocked(); err != nil {
 			return c.Status(500).JSON(fiber.Map{"error": "Failed to persist runtime state"})
 		}
@@ -1354,6 +1418,7 @@ func registerCampaignRoutes(app *fiber.App, s *store, auth fiber.Handler) {
 			return c.Status(404).JSON(fiber.Map{"error": "Not found"})
 		}
 		delete(s.campaigns, id)
+		s.rebuildCampaignIndexLocked()
 		if err := s.writeSupplyDemandStateLocked(); err != nil {
 			return c.Status(500).JSON(fiber.Map{"error": "Failed to persist runtime state"})
 		}
@@ -2499,28 +2564,14 @@ func supplyTagVastHandler(p *pipeline.Pipeline, metrics *monitor.Metrics, s *sto
 		// the demand sources explicitly mapped to this supply tag.
 		var mappedAdapterIDs []string
 		if sid > 0 {
-			s.mu.RLock()
-			for _, m := range s.mappingsBySID[sid] {
-				switch m.Type {
-				case "ortb":
-					mappedAdapterIDs = append(mappedAdapterIDs, fmt.Sprintf("demand-ep-%d", m.DemandID))
-				case "vast":
-					mappedAdapterIDs = append(mappedAdapterIDs, fmt.Sprintf("demand-vast-%d", m.DemandID))
-				}
-			}
-			s.mu.RUnlock()
+			mappedAdapterIDs = s.mappedAdapterIDsForSupplyID(sid)
 		}
 
 		// Drop stale/unknown mapping targets. If nothing valid remains,
 		// fall back to all active adapters instead of forcing empty fanout.
 		if len(mappedAdapterIDs) > 0 && p.Registry != nil {
 			validIDs := make([]string, 0, len(mappedAdapterIDs))
-			seen := make(map[string]struct{}, len(mappedAdapterIDs))
 			for _, adapterID := range mappedAdapterIDs {
-				if _, ok := seen[adapterID]; ok {
-					continue
-				}
-				seen[adapterID] = struct{}{}
 				cfg := p.Registry.GetConfig(adapterID)
 				if cfg == nil || cfg.Status != 1 {
 					continue

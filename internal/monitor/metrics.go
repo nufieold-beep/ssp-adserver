@@ -47,9 +47,11 @@ type Metrics struct {
 	CampaignMetrics sync.Map // map[int]*CampaignMetric
 
 	// Traffic events ring buffer
-	TrafficEvents []TrafficEvent
-	trafficMu     sync.Mutex
-	maxEvents     int
+	trafficMu    sync.RWMutex
+	trafficRing  []TrafficEvent
+	trafficHead  int
+	trafficCount int
+	maxEvents    int
 
 	StartTime time.Time
 }
@@ -83,9 +85,11 @@ type TrafficEvent struct {
 }
 
 func New() *Metrics {
+	const defaultMaxEvents = 200
 	return &Metrics{
-		maxEvents: 200,
-		StartTime: time.Now(),
+		maxEvents:   defaultMaxEvents,
+		trafficRing: make([]TrafficEvent, defaultMaxEvents),
+		StartTime:   time.Now(),
 	}
 }
 
@@ -146,30 +150,52 @@ func (m *Metrics) AvgBidLatency() float64 {
 }
 
 func (m *Metrics) AddTrafficEvent(evt TrafficEvent) {
+	if m.maxEvents <= 0 {
+		return
+	}
 	evt.Time = time.Now()
 	m.trafficMu.Lock()
-	m.TrafficEvents = append(m.TrafficEvents, evt)
-	if len(m.TrafficEvents) > m.maxEvents {
-		m.TrafficEvents = m.TrafficEvents[len(m.TrafficEvents)-m.maxEvents:]
+	if len(m.trafficRing) != m.maxEvents {
+		m.trafficRing = make([]TrafficEvent, m.maxEvents)
+		m.trafficHead = 0
+		m.trafficCount = 0
+	}
+	m.trafficRing[m.trafficHead] = evt
+	m.trafficHead = (m.trafficHead + 1) % m.maxEvents
+	if m.trafficCount < m.maxEvents {
+		m.trafficCount++
 	}
 	m.trafficMu.Unlock()
 }
 
 func (m *Metrics) GetTrafficEvents(filterType string) []TrafficEvent {
-	m.trafficMu.Lock()
-	defer m.trafficMu.Unlock()
+	m.trafficMu.RLock()
+	ordered := m.snapshotTrafficEventsLocked()
+	m.trafficMu.RUnlock()
 
 	if filterType == "" {
-		out := make([]TrafficEvent, len(m.TrafficEvents))
-		copy(out, m.TrafficEvents)
-		return out
+		return ordered
 	}
 
-	var out []TrafficEvent
-	for _, e := range m.TrafficEvents {
+	out := make([]TrafficEvent, 0, len(ordered))
+	for _, e := range ordered {
 		if e.Type == filterType {
 			out = append(out, e)
 		}
+	}
+	return out
+}
+
+func (m *Metrics) snapshotTrafficEventsLocked() []TrafficEvent {
+	if m.trafficCount == 0 || m.maxEvents <= 0 || len(m.trafficRing) == 0 {
+		return nil
+	}
+
+	out := make([]TrafficEvent, 0, m.trafficCount)
+	start := (m.trafficHead - m.trafficCount + m.maxEvents) % m.maxEvents
+	for i := 0; i < m.trafficCount; i++ {
+		idx := (start + i) % m.maxEvents
+		out = append(out, m.trafficRing[idx])
 	}
 	return out
 }

@@ -54,6 +54,13 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 	start := time.Now()
 	result := &Result{RequestID: req.ID, BaseURL: baseURL}
 
+	hasAdRequestSubscriber := p.Bus != nil && p.Bus.HasSubscribers(eventbus.EvtAdRequest)
+	hasFloorSubscriber := p.Bus != nil && p.Bus.HasSubscribers(eventbus.EvtFloorApplied)
+	hasErrorSubscriber := p.Bus != nil && p.Bus.HasSubscribers(eventbus.EvtError)
+	hasNoBidSubscriber := p.Bus != nil && p.Bus.HasSubscribers(eventbus.EvtNoBid)
+	hasBidResponseSubscriber := p.Bus != nil && p.Bus.HasSubscribers(eventbus.EvtBidResponse)
+	hasAuctionEndSubscriber := p.Bus != nil && p.Bus.HasSubscribers(eventbus.EvtAuctionEnd)
+
 	// ── Stage 1: Record request ──
 	p.Metrics.RecordAdRequest()
 	p.Metrics.RecordAdOpp()
@@ -62,9 +69,11 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 	if req.App != nil {
 		bundle = req.App.Bundle
 	}
-	p.Bus.Publish(eventbus.Event{Type: eventbus.EvtAdRequest, Data: map[string]interface{}{
-		"request_id": req.ID, "bundle": bundle,
-	}})
+	if hasAdRequestSubscriber {
+		p.Bus.Publish(eventbus.Event{Type: eventbus.EvtAdRequest, Data: map[string]interface{}{
+			"request_id": req.ID, "bundle": bundle,
+		}})
+	}
 
 	p.Metrics.AddTrafficEvent(monitor.TrafficEvent{
 		Type: "ortb_request", RequestID: req.ID, Env: detectRequestEnvironment(req),
@@ -78,9 +87,11 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 	if effectiveFloor > req.Imp[0].BidFloor {
 		req.Imp[0].BidFloor = effectiveFloor
 	}
-	p.Bus.Publish(eventbus.Event{Type: eventbus.EvtFloorApplied, Data: map[string]interface{}{
-		"request_id": req.ID, "floor": req.Imp[0].BidFloor,
-	}})
+	if hasFloorSubscriber {
+		p.Bus.Publish(eventbus.Event{Type: eventbus.EvtFloorApplied, Data: map[string]interface{}{
+			"request_id": req.ID, "floor": req.Imp[0].BidFloor,
+		}})
+	}
 
 	// ── Stage 3: Fan-out bid requests ──
 	// Send bid requests to all eligible demand adapters in parallel.
@@ -117,23 +128,29 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 			if br.TimedOut {
 				adapterTimeoutCount++
 			}
-			p.Bus.Publish(eventbus.Event{Type: eventbus.EvtError, Data: map[string]interface{}{
-				"request_id": req.ID, "adapter": br.AdapterID, "error": br.Error.Error(),
-			}})
+			if hasErrorSubscriber {
+				p.Bus.Publish(eventbus.Event{Type: eventbus.EvtError, Data: map[string]interface{}{
+					"request_id": req.ID, "adapter": br.AdapterID, "error": br.Error.Error(),
+				}})
+			}
 			continue
 		}
 		if br.NoBid {
 			adapterNoBidCount++
-			p.Bus.Publish(eventbus.Event{Type: eventbus.EvtNoBid, Data: map[string]interface{}{
-				"request_id": req.ID, "adapter": br.AdapterID,
-			}})
+			if hasNoBidSubscriber {
+				p.Bus.Publish(eventbus.Event{Type: eventbus.EvtNoBid, Data: map[string]interface{}{
+					"request_id": req.ID, "adapter": br.AdapterID,
+				}})
+			}
 			continue
 		}
-		for _, bid := range br.Bids {
-			p.Bus.Publish(eventbus.Event{Type: eventbus.EvtBidResponse, Data: map[string]interface{}{
-				"request_id": req.ID, "adapter": br.AdapterID,
-				"bid_price": bid.Price, "bid_id": bid.ID, "latency_ms": br.Latency.Milliseconds(),
-			}})
+		if hasBidResponseSubscriber {
+			for _, bid := range br.Bids {
+				p.Bus.Publish(eventbus.Event{Type: eventbus.EvtBidResponse, Data: map[string]interface{}{
+					"request_id": req.ID, "adapter": br.AdapterID,
+					"bid_price": bid.Price, "bid_id": bid.ID, "latency_ms": br.Latency.Milliseconds(),
+				}})
+			}
 		}
 		candidateBids = append(candidateBids, br.Bids...)
 	}
@@ -173,11 +190,13 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 	auctionType := p.AuctionType
 	auctionResult := auction.Run(candidateBids, req.Imp[0].BidFloor, auctionType)
 
-	p.Bus.PublishSync(eventbus.Event{Type: eventbus.EvtAuctionEnd, Data: map[string]interface{}{
-		"request_id": req.ID, "winner_id": winnerIDOrEmpty(auctionResult),
-		"win_price": auctionResult.WinPrice, "auction_type": auctionType,
-		"bid_count": len(candidateBids),
-	}})
+	if hasAuctionEndSubscriber {
+		p.Bus.PublishSync(eventbus.Event{Type: eventbus.EvtAuctionEnd, Data: map[string]interface{}{
+			"request_id": req.ID, "winner_id": winnerIDOrEmpty(auctionResult),
+			"win_price": auctionResult.WinPrice, "auction_type": auctionType,
+			"bid_count": len(candidateBids),
+		}})
+	}
 
 	if auctionResult.Winner == nil {
 		p.Metrics.RecordNoBid()

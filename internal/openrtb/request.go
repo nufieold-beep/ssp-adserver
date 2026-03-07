@@ -95,57 +95,65 @@ var defaultSChain = &Source{
 
 // BuildFromHTTP constructs a CTV/in-app video BidRequest from query params.
 func BuildFromHTTP(c *fiber.Ctx) BidRequest {
-	w := queryInt(c, "w", 1920)
-	h := queryInt(c, "h", 1080)
-	minDur := queryIntFallback(c, "min_dur", "minduration", requestDefaults.MinDur)
-	maxDur := queryIntFallback(c, "max_dur", "maxduration", requestDefaults.MaxDur)
+	queries := c.Queries()
+
+	w := queryIntMap(queries, 1920, "w")
+	h := queryIntMap(queries, 1080, "h")
+	minDur := queryIntMap(queries, requestDefaults.MinDur, "min_dur", "minduration")
+	maxDur := queryIntMap(queries, requestDefaults.MaxDur, "max_dur", "maxduration")
 
 	skippable := 0
-	if c.Query("skip") == "1" {
+	if queryMap(queries, "skip") == "1" {
 		skippable = 1
 	}
 
-	tagID := c.Query("sid", c.Query("tagid", c.Params("tag")))
-
-	deviceType := 3 // CTV default
-	if dt := c.Query("device_type", c.Query("devicetype")); dt != "" {
-		deviceType, _ = strconv.Atoi(dt)
+	tagID := queryMap(queries, "sid", "tagid")
+	if tagID == "" {
+		tagID = c.Params("tag")
 	}
-	language := c.Query("ct_lang", c.Query("lang", "en"))
 
-	dnt := queryInt(c, "dnt", 0)
-	lmt := queryInt(c, "lmt", 0)
-	ip := c.Query("ip", c.Query("uip", c.IP()))
-	ua := c.Query("ua", c.Get("User-Agent"))
-	ifa := c.Query("ifa")
-	bundle := c.Query("app_bundle", c.Query("bundle"))
+	deviceType := queryIntMap(queries, 3, "device_type", "devicetype") // CTV default
+	language := queryMapDefault(queries, "en", "ct_lang", "lang")
+
+	dnt := queryIntMap(queries, 0, "dnt")
+	lmt := queryIntMap(queries, 0, "lmt")
+	ip := queryMap(queries, "ip", "uip")
+	if ip == "" {
+		ip = c.IP()
+	}
+	ua := queryMap(queries, "ua")
+	if ua == "" {
+		ua = c.Get("User-Agent")
+	}
+	ifa := queryMap(queries, "ifa")
+	bundle := queryMap(queries, "app_bundle", "bundle")
 	if bundle == "" && tagID != "" {
 		bundle = "supply." + normalizeBundleToken(tagID)
 	}
 	if bundle == "" {
 		bundle = "app.unknown"
 	}
-	deviceOS := c.Query("os")
-	deviceMake := c.Query("device_make")
+	deviceOS := queryMap(queries, "os")
+	deviceMake := queryMap(queries, "device_make")
 
 	reqID := uuid.NewString()
 
-	country := c.Query("country_code", c.Query("country"))
+	country := queryMap(queries, "country_code", "country")
 	if len(country) == 2 {
 		country = ToAlpha3(country)
 	}
 
-	startDelay := queryInt(c, "startdelay", 0)
-	placement := queryInt(c, "placement", 1)
-	plcmt := queryInt(c, "plcmt", placement)
-	playbackMethods := queryEnumIntList(c.Query("playmethod", c.Query("playbackmethod")))
+	startDelay := queryIntMap(queries, 0, "startdelay")
+	placement := queryIntMap(queries, 1, "placement")
+	plcmt := queryIntMap(queries, placement, "plcmt")
+	playbackMethods := queryEnumIntList(queryMap(queries, "playmethod", "playbackmethod"))
 	startDelayMode := adcom1.StartDelay(startDelay)
 	placementSubtype := adcom1.VideoPlacementSubtype(placement)
 	plcmtSubtype := adcom1.VideoPlcmtSubtype(plcmt)
 
 	req := BidRequest{
 		ID:      reqID,
-		TMax:    int64(queryInt(c, "tmax", 0)),
+		TMax:    int64(queryIntMap(queries, 0, "tmax")),
 		AT:      1,
 		AllImps: 0,
 		Cur:     defaultCur,
@@ -176,10 +184,10 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 		},
 		App: &App{
 			ID:        bundle,
-			Name:      c.Query("app_name"),
+			Name:      queryMap(queries, "app_name"),
 			Bundle:    bundle,
-			StoreURL:  c.Query("app_store_url", c.Query("storeurl")),
-			Ver:       c.Query("app_ver"),
+			StoreURL:  queryMap(queries, "app_store_url", "storeurl"),
+			Ver:       queryMap(queries, "app_ver"),
 			Publisher: &Publisher{ID: tagID},
 			Content:   &Content{Language: language, LiveStream: int8Ptr(1)},
 		},
@@ -187,11 +195,11 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 			DNT:        int8Ptr(dnt),
 			UA:         ua,
 			IP:         ip,
-			Geo:        &Geo{Country: country, Region: c.Query("region"), City: c.Query("city"), ZIP: c.Query("zip"), Type: adcom1.LocationType(2)},
+			Geo:        &Geo{Country: country, Region: queryMap(queries, "region"), City: queryMap(queries, "city"), ZIP: queryMap(queries, "zip"), Type: adcom1.LocationType(2)},
 			Make:       deviceMake,
-			Model:      c.Query("device_model"),
+			Model:      queryMap(queries, "device_model"),
 			OS:         deviceOS,
-			OSV:        c.Query("osv"),
+			OSV:        queryMap(queries, "osv"),
 			DeviceType: adcom1.DeviceType(deviceType),
 			IFA:        ifa,
 			Lmt:        int8Ptr(lmt),
@@ -204,25 +212,25 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 			COPPA:  0,
 			GPPSID: []int8{0},
 		},
-		Source: cloneSource(defaultSChain),
+		Source: defaultSChain,
 	}
 
 	if ifaType := detectIFAType(ua, deviceMake, deviceOS); ifaType != "" {
-		req.Device.Ext = marshalRawJSON(map[string]string{"ifa_type": ifaType})
+		req.Device.Ext = buildIFATypeExt(ifaType)
 	}
 
 	if ifa != "" {
 		req.User = &User{ID: ifa}
 	}
 
-	if ct := c.Query("connectiontype"); ct != "" {
+	if ct := queryMap(queries, "connectiontype"); ct != "" {
 		if parsed, err := strconv.Atoi(ct); err == nil {
 			connType := adcom1.ConnectionType(parsed)
 			req.Device.ConnectionType = &connType
 		}
 	}
 
-	if ctGenre := c.Query("ct_genre"); ctGenre != "" {
+	if ctGenre := queryMap(queries, "ct_genre"); ctGenre != "" {
 		cats := strings.Split(ctGenre, ",")
 		req.App.Cat = cats
 		if req.App.Content == nil {
@@ -232,15 +240,15 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 		req.App.Content.Cat = cats
 	}
 
-	if coppa := c.Query("coppa"); coppa != "" {
+	if coppa := queryMap(queries, "coppa"); coppa != "" {
 		if parsed, err := strconv.Atoi(coppa); err == nil {
 			req.Regs.COPPA = int8(parsed)
 		}
 	}
-	if usPriv := c.Query("us_privacy"); usPriv != "" {
+	if usPriv := queryMap(queries, "us_privacy"); usPriv != "" {
 		req.Regs.USPrivacy = usPriv
 	}
-	if gdpr := c.Query("gdpr"); gdpr != "" {
+	if gdpr := queryMap(queries, "gdpr"); gdpr != "" {
 		if parsed, err := strconv.Atoi(gdpr); err == nil {
 			gdprFlag := int8(parsed)
 			req.Regs.GDPR = &gdprFlag
@@ -248,22 +256,6 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 	}
 
 	return req
-}
-
-func cloneSource(src *Source) *Source {
-	if src == nil {
-		return nil
-	}
-	out := *src
-	if src.SChain != nil {
-		sChainCopy := *src.SChain
-		if len(src.SChain.Nodes) > 0 {
-			sChainCopy.Nodes = make([]SChainNode, len(src.SChain.Nodes))
-			copy(sChainCopy.Nodes, src.SChain.Nodes)
-		}
-		out.SChain = &sChainCopy
-	}
-	return &out
 }
 
 func normalizeBundleToken(v string) string {
@@ -282,31 +274,33 @@ func normalizeBundleToken(v string) string {
 	}
 	return v
 }
-
-// queryInt parses a query param as int with a default.
-func queryInt(c *fiber.Ctx, key string, def int) int {
-	v := c.Query(key)
-	if v == "" {
-		return def
+func queryMap(queries map[string]string, keys ...string) string {
+	for _, key := range keys {
+		if value := queries[key]; value != "" {
+			return value
+		}
 	}
-	n, err := strconv.Atoi(v)
-	if err != nil {
-		return def
-	}
-	return n
+	return ""
 }
 
-// queryIntFallback tries primary key, then fallback key, then default.
-func queryIntFallback(c *fiber.Ctx, primary, fallback string, def int) int {
-	if v := c.Query(primary); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
+func queryMapDefault(queries map[string]string, def string, keys ...string) string {
+	if value := queryMap(queries, keys...); value != "" {
+		return value
 	}
-	if v := c.Query(fallback); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
+	return def
+}
+
+func queryIntMap(queries map[string]string, def int, keys ...string) int {
+	for _, key := range keys {
+		value := queries[key]
+		if value == "" {
+			continue
 		}
+		parsed, err := strconv.Atoi(value)
+		if err != nil {
+			continue
+		}
+		return parsed
 	}
 	return def
 }
@@ -379,15 +373,11 @@ func int64Ptr(v int64) *int64 {
 	return &x
 }
 
-func marshalRawJSON(v interface{}) json.RawMessage {
-	if v == nil {
+func buildIFATypeExt(ifaType string) json.RawMessage {
+	if ifaType == "" {
 		return nil
 	}
-	encoded, err := json.Marshal(v)
-	if err != nil {
-		return nil
-	}
-	return encoded
+	return json.RawMessage(`{"ifa_type":"` + ifaType + `"}`)
 }
 
 func detectPlatformBrand(uaL, make, os string) string {

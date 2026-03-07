@@ -72,6 +72,10 @@ type AdapterConfig struct {
 	SChainEnabled bool
 	BAdv          []string
 	BCat          []string
+
+	targetGeoSet   map[string]struct{} `yaml:"-" json:"-"`
+	targetOSSet    map[string]struct{} `yaml:"-" json:"-"`
+	blockedBCatSet map[string]struct{} `yaml:"-" json:"-"`
 }
 
 // Registry manages all demand adapters with hot-reload capability.
@@ -112,7 +116,11 @@ func NewRegistry() *Registry {
 
 // Register adds a demand adapter to the registry.
 func (r *Registry) Register(adapter DemandAdapter, cfg *AdapterConfig) {
+	if adapter == nil || cfg == nil || cfg.ID == "" {
+		return
+	}
 	r.mu.Lock()
+	preprocessAdapterConfig(cfg)
 	r.adapters[cfg.ID] = adapter
 	r.configs[cfg.ID] = cfg
 	if cfg.QPSLimit > 0 {
@@ -136,9 +144,12 @@ func (r *Registry) GetActive(req *openrtb.BidRequest) []DemandAdapter {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	var active []DemandAdapter
+	active := make([]DemandAdapter, 0, len(r.adapters))
 	for id, adapter := range r.adapters {
 		cfg := r.configs[id]
+		if cfg == nil {
+			continue
+		}
 		if cfg.Status != 1 {
 			continue
 		}
@@ -165,7 +176,7 @@ func (r *Registry) FanOut(ctx context.Context, req *openrtb.BidRequest, tmax tim
 // Used when supply-demand mappings restrict which demand sources receive requests.
 func (r *Registry) FanOutTo(ctx context.Context, req *openrtb.BidRequest, tmax time.Duration, adapterIDs []string) []*BidResult {
 	r.mu.RLock()
-	var adapters []DemandAdapter
+	adapters := make([]DemandAdapter, 0, len(adapterIDs))
 	for _, id := range adapterIDs {
 		a, ok := r.adapters[id]
 		if !ok {
@@ -304,42 +315,61 @@ func validateTargetingOptions(cfg *AdapterConfig, req *openrtb.BidRequest) bool 
 	}
 
 	// Geo targeting
-	if len(cfg.TargetGeos) > 0 && req.Device.Geo != nil && req.Device.Geo.Country != "" {
-		match := false
-		for _, g := range cfg.TargetGeos {
-			if strings.EqualFold(g, req.Device.Geo.Country) {
-				match = true
-				break
-			}
+	if len(cfg.targetGeoSet) > 0 {
+		if req.Device.Geo == nil || req.Device.Geo.Country == "" {
+			return false
 		}
+		_, match := cfg.targetGeoSet[strings.ToUpper(req.Device.Geo.Country)]
 		if !match {
 			return false
 		}
 	}
 
 	// OS targeting
-	if len(cfg.TargetOS) > 0 && req.Device.OS != "" {
-		match := false
-		for _, o := range cfg.TargetOS {
-			if strings.EqualFold(o, req.Device.OS) {
-				match = true
-				break
-			}
+	if len(cfg.targetOSSet) > 0 {
+		if req.Device.OS == "" {
+			return false
 		}
+		_, match := cfg.targetOSSet[strings.ToUpper(req.Device.OS)]
 		if !match {
 			return false
 		}
 	}
 
 	// Bcat blocking
-	if len(cfg.BlockedBcat) > 0 && len(req.BCat) > 0 {
-		for _, blocked := range cfg.BlockedBcat {
-			for _, bc := range req.BCat {
-				if strings.EqualFold(blocked, bc) {
-					return false
-				}
+	if len(cfg.blockedBCatSet) > 0 && len(req.BCat) > 0 {
+		for _, bc := range req.BCat {
+			if _, blocked := cfg.blockedBCatSet[strings.ToUpper(strings.TrimSpace(bc))]; blocked {
+				return false
 			}
 		}
 	}
 	return true
+}
+
+func preprocessAdapterConfig(cfg *AdapterConfig) {
+	if cfg == nil {
+		return
+	}
+	cfg.targetGeoSet = normalizeUpperSet(cfg.TargetGeos)
+	cfg.targetOSSet = normalizeUpperSet(cfg.TargetOS)
+	cfg.blockedBCatSet = normalizeUpperSet(cfg.BlockedBcat)
+}
+
+func normalizeUpperSet(values []string) map[string]struct{} {
+	if len(values) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(values))
+	for _, raw := range values {
+		normalized := strings.ToUpper(strings.TrimSpace(raw))
+		if normalized == "" {
+			continue
+		}
+		set[normalized] = struct{}{}
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	return set
 }
