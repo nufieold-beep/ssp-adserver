@@ -4,7 +4,7 @@
 		{
 			"label": "Auto Git Push",
 			"type": "shell",
-			"command": "git add . && git commit -m \"Automated update\" && git push -u origin main",
+			"command": "git add .; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; git diff --cached --quiet; if ($LASTEXITCODE -gt 1) { exit $LASTEXITCODE }; if ($LASTEXITCODE -eq 1) { git commit -m 'Automated update'; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }; git push -u origin main",
 			"args": [],
 			"isBackground": false,
 			"problemMatcher": [],
