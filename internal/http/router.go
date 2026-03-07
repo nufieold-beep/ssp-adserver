@@ -2897,6 +2897,11 @@ func handlePipelineServeResult(c *fiber.Ctx, p *pipeline.Pipeline, metrics *moni
 		return c.Type("xml").SendString(vast.BuildNoAd())
 	}
 
+	demandEndpointID := 0
+	if id, demandType, ok := parseDemandSource(strings.TrimSpace(result.AdapterID)); ok && demandType == "ortb" {
+		demandEndpointID = id
+	}
+
 	if campaignID > 0 {
 		cm := metrics.GetCampaignMetric(campaignID)
 		cm.Opps.Add(1)
@@ -2912,7 +2917,7 @@ func handlePipelineServeResult(c *fiber.Ctx, p *pipeline.Pipeline, metrics *moni
 	s.recordMetricsExportRequestOutcome(
 		req,
 		auditSupplyID,
-		campaignID,
+		demandEndpointID,
 		auditBundle,
 		1,
 		result.Winner.ReportingPrice(result.WinPrice)/1000.0,

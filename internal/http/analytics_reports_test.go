@@ -218,14 +218,14 @@ func TestPersistedAnalyticsTotalsSurviveRuntimeStateReload(t *testing.T) {
 	s.loadMetricsExportBucketsLocked([]metricsExportBucket{{
 		Hour:                time.Date(2026, time.March, 7, 9, 0, 0, 0, time.UTC),
 		SourceID:            11,
-		CampaignID:          7,
+		DemandEndpointID:    7,
 		CountryCode:         "USA",
 		BundleID:            "com.example.app",
 		AdRequests:          1,
 		AdOpportunities:     1,
 		FilledOpportunities: 1,
 		Impressions:         1,
-		ChannelRevenue:      0.003,
+		SourceIDRevenue:     0.003,
 		TotalRevenue:        0.004,
 	}})
 	write := s.prepareSupplyDemandStateWriteLocked()
@@ -266,6 +266,9 @@ func TestPersistedAnalyticsTotalsSurviveRuntimeStateReload(t *testing.T) {
 	if got := exportBuckets[0].SourceID; got != 11 {
 		t.Fatalf("expected persisted export source id 11, got %d", got)
 	}
+	if got := exportBuckets[0].DemandEndpointID; got != 7 {
+		t.Fatalf("expected persisted export demand endpoint id 7, got %d", got)
+	}
 
 	app := fiber.New()
 	registerAnalyticsRoutes(app, reloaded, reloaded.metrics)
@@ -295,40 +298,40 @@ func TestBuildMetricsExportRowsGroupsByDateAndHour(t *testing.T) {
 		{
 			Hour:                time.Date(2026, time.March, 6, 10, 0, 0, 0, time.UTC),
 			SourceID:            11,
-			CampaignID:          77,
+			DemandEndpointID:    77,
 			CountryCode:         "USA",
 			BundleID:            "com.example.app",
 			AdRequests:          10,
 			AdOpportunities:     10,
 			FilledOpportunities: 4,
 			Impressions:         3,
-			ChannelRevenue:      0.012,
+			SourceIDRevenue:     0.012,
 			TotalRevenue:        0.016,
 		},
 		{
 			Hour:                time.Date(2026, time.March, 6, 11, 0, 0, 0, time.UTC),
 			SourceID:            11,
-			CampaignID:          77,
+			DemandEndpointID:    77,
 			CountryCode:         "USA",
 			BundleID:            "com.example.app",
 			AdRequests:          5,
 			AdOpportunities:     5,
 			FilledOpportunities: 1,
 			Impressions:         1,
-			ChannelRevenue:      0.003,
+			SourceIDRevenue:     0.003,
 			TotalRevenue:        0.004,
 		},
 		{
 			Hour:                time.Date(2026, time.March, 7, 9, 0, 0, 0, time.UTC),
 			SourceID:            15,
-			CampaignID:          88,
+			DemandEndpointID:    88,
 			CountryCode:         "CAN",
 			BundleID:            "com.example.other",
 			AdRequests:          20,
 			AdOpportunities:     20,
 			FilledOpportunities: 10,
 			Impressions:         8,
-			ChannelRevenue:      0.030,
+			SourceIDRevenue:     0.030,
 			TotalRevenue:        0.040,
 		},
 	}
@@ -344,14 +347,17 @@ func TestBuildMetricsExportRowsGroupsByDateAndHour(t *testing.T) {
 	if dateRows[0].Date != "2026-03-06" || dateRows[0].AdRequests != 15 || dateRows[0].Impressions != 4 {
 		t.Fatalf("unexpected first daily row: %+v", dateRows[0])
 	}
-	if dateRows[0].SourceID != 11 || dateRows[0].CampaignID != 77 || dateRows[0].CountryCode != "USA" || dateRows[0].BundleID != "com.example.app" {
+	if dateRows[0].SourceID != 11 || dateRows[0].DemandEndpointID != 77 || dateRows[0].CountryCode != "USA" || dateRows[0].BundleID != "com.example.app" {
 		t.Fatalf("expected daily row dimensions to be preserved, got %+v", dateRows[0])
 	}
 	if !almostEqualFloat(dateRows[0].ECPM, 4.0) {
 		t.Fatalf("expected first daily row total eCPM 4.0, got %.2f", dateRows[0].ECPM)
 	}
-	if !almostEqualFloat(dateRows[0].ChannelECPM, 3.0) {
-		t.Fatalf("expected first daily row channel eCPM 3.0, got %.2f", dateRows[0].ChannelECPM)
+	if !almostEqualFloat(dateRows[0].SourceIDRevenue, 0.015) {
+		t.Fatalf("expected first daily row source revenue 0.015, got %.6f", dateRows[0].SourceIDRevenue)
+	}
+	if !almostEqualFloat(dateRows[0].SourceIDECPM, 3.0) {
+		t.Fatalf("expected first daily row source eCPM 3.0, got %.2f", dateRows[0].SourceIDECPM)
 	}
 
 	hourQuery, err := resolveMetricsExportQuery("custom", "hour", "2026-03-06", "2026-03-06", "10", "11", time.Date(2026, time.March, 7, 12, 0, 0, 0, time.UTC))
@@ -387,14 +393,14 @@ func TestMetricsExportRouteReturnsCSV(t *testing.T) {
 	s.loadMetricsExportBucketsLocked([]metricsExportBucket{{
 		Hour:                time.Date(2026, time.March, 6, 10, 0, 0, 0, time.UTC),
 		SourceID:            11,
-		CampaignID:          77,
+		DemandEndpointID:    77,
 		CountryCode:         "USA",
 		BundleID:            "com.example.app",
 		AdRequests:          10,
 		AdOpportunities:     10,
 		FilledOpportunities: 4,
 		Impressions:         3,
-		ChannelRevenue:      0.012,
+		SourceIDRevenue:     0.012,
 		TotalRevenue:        0.016,
 	}})
 	s.mu.Unlock()
@@ -412,10 +418,10 @@ func TestMetricsExportRouteReturnsCSV(t *testing.T) {
 		t.Fatalf("failed to read csv export body: %v", err)
 	}
 	text := string(body)
-	if !strings.Contains(text, "Date,Hour,Source ID,Campaign ID,Country Code,Country,Bundle ID,Ad Requests") {
+	if !strings.Contains(text, "Date,Hour,Source ID,Demand ORTB Endpoint ID,Country Code,Country,Bundle ID,Ad Requests,Ad Opportunities,Impressions,Source ID Revenue,Source ID eCPM,Demand ORTB Endpoints Revenue,eCPM") {
 		t.Fatalf("expected csv header, got %q", text)
 	}
-	if !strings.Contains(text, "2026-03-06,10:00,11,77,USA,United States,com.example.app,10,10,3") {
+	if !strings.Contains(text, "2026-03-06,10:00,11,77,USA,United States,com.example.app,10,10,3,0.012000,3.00,0.016000,4.00") {
 		t.Fatalf("expected csv row for exported hour, got %q", text)
 	}
 }

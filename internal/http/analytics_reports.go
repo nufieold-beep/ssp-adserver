@@ -116,23 +116,25 @@ type metricsExportQuery struct {
 type metricsExportBucket struct {
 	Hour                time.Time `json:"hour"`
 	SourceID            int       `json:"source_id,omitempty"`
-	CampaignID          int       `json:"campaign_id,omitempty"`
+	DemandEndpointID    int       `json:"demand_endpoint_id,omitempty"`
+	LegacyCampaignID    int       `json:"campaign_id,omitempty"`
 	CountryCode         string    `json:"country_code,omitempty"`
 	BundleID            string    `json:"bundle_id,omitempty"`
 	AdRequests          int64     `json:"ad_requests"`
 	AdOpportunities     int64     `json:"ad_opportunities"`
 	FilledOpportunities int64     `json:"filled_opportunities"`
 	Impressions         int64     `json:"impressions"`
-	ChannelRevenue      float64   `json:"channel_revenue"`
+	SourceIDRevenue     float64   `json:"source_id_revenue,omitempty"`
+	LegacyChannelRevenue float64  `json:"channel_revenue,omitempty"`
 	TotalRevenue        float64   `json:"total_revenue"`
 }
 
 type metricsExportDeliveryContext struct {
-	RecordedAt  time.Time
-	SourceID    int
-	CampaignID  int
-	CountryCode string
-	BundleID    string
+	RecordedAt        time.Time
+	SourceID          int
+	DemandEndpointID  int
+	CountryCode       string
+	BundleID          string
 }
 
 type metricsExportAccumulator struct {
@@ -140,7 +142,7 @@ type metricsExportAccumulator struct {
 	AdOpportunities     int64
 	FilledOpportunities int64
 	Impressions         int64
-	ChannelRevenue      float64
+	SourceIDRevenue     float64
 	TotalRevenue        float64
 }
 
@@ -148,15 +150,15 @@ type metricsExportRow struct {
 	Date                string  `json:"date,omitempty"`
 	Hour                string  `json:"hour,omitempty"`
 	SourceID            int     `json:"source_id,omitempty"`
-	CampaignID          int     `json:"campaign_id,omitempty"`
+	DemandEndpointID    int     `json:"demand_endpoint_id,omitempty"`
 	CountryCode         string  `json:"country_code,omitempty"`
 	Country             string  `json:"country,omitempty"`
 	BundleID            string  `json:"bundle_id,omitempty"`
 	AdRequests          int64   `json:"ad_requests"`
 	AdOpportunities     int64   `json:"ad_opportunities"`
 	Impressions         int64   `json:"impressions"`
-	ChannelRevenue      float64 `json:"channel_revenue"`
-	ChannelECPM         float64 `json:"channel_ecpm"`
+	SourceIDRevenue     float64 `json:"source_id_revenue"`
+	SourceIDECPM        float64 `json:"source_id_ecpm"`
 	TotalRevenue        float64 `json:"total_revenue"`
 	ECPM                float64 `json:"ecpm"`
 	AdRequestFillRate   float64 `json:"ad_request_fill_rate"`
@@ -379,6 +381,14 @@ func (s *store) loadMetricsExportBucketsLocked(buckets []metricsExportBucket) {
 			continue
 		}
 		bucket.Hour = hour
+		if bucket.DemandEndpointID <= 0 && bucket.LegacyCampaignID > 0 {
+			bucket.DemandEndpointID = bucket.LegacyCampaignID
+		}
+		if bucket.SourceIDRevenue <= 0 && bucket.LegacyChannelRevenue > 0 {
+			bucket.SourceIDRevenue = bucket.LegacyChannelRevenue
+		}
+		bucket.LegacyCampaignID = 0
+		bucket.LegacyChannelRevenue = 0
 		bucket.CountryCode = normalizeMetricsCountryCode(bucket.CountryCode)
 		bucket.BundleID = normalizeMetricsBundleID(bucket.BundleID)
 		s.metricsExportBuckets[metricsExportBucketKey(bucket)] = bucket
@@ -396,13 +406,13 @@ func (s *store) snapshotMetricsExportBucketsLocked() []metricsExportBucket {
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Hour.Equal(out[j].Hour) {
 			if out[i].SourceID == out[j].SourceID {
-				if out[i].CampaignID == out[j].CampaignID {
+				if out[i].DemandEndpointID == out[j].DemandEndpointID {
 					if out[i].CountryCode == out[j].CountryCode {
 						return out[i].BundleID < out[j].BundleID
 					}
 					return out[i].CountryCode < out[j].CountryCode
 				}
-				return out[i].CampaignID < out[j].CampaignID
+				return out[i].DemandEndpointID < out[j].DemandEndpointID
 			}
 			return out[i].SourceID < out[j].SourceID
 		}
@@ -429,7 +439,7 @@ func (s *store) addMetricsExportBucketLocked(bucket metricsExportBucket) {
 	if existing.Hour.IsZero() {
 		existing.Hour = bucket.Hour
 		existing.SourceID = bucket.SourceID
-		existing.CampaignID = bucket.CampaignID
+		existing.DemandEndpointID = bucket.DemandEndpointID
 		existing.CountryCode = bucket.CountryCode
 		existing.BundleID = bucket.BundleID
 	}
@@ -437,12 +447,12 @@ func (s *store) addMetricsExportBucketLocked(bucket metricsExportBucket) {
 	existing.AdOpportunities += bucket.AdOpportunities
 	existing.FilledOpportunities += bucket.FilledOpportunities
 	existing.Impressions += bucket.Impressions
-	existing.ChannelRevenue += bucket.ChannelRevenue
+	existing.SourceIDRevenue += bucket.SourceIDRevenue
 	existing.TotalRevenue += bucket.TotalRevenue
 	s.metricsExportBuckets[key] = existing
 }
 
-func (s *store) recordMetricsExportRequestOutcome(req *openrtb.BidRequest, sourceID, campaignID int, bundleID string, filledOpportunities int64, channelRevenue, totalRevenue float64) {
+func (s *store) recordMetricsExportRequestOutcome(req *openrtb.BidRequest, sourceID, demandEndpointID int, bundleID string, filledOpportunities int64, sourceRevenue, totalRevenue float64) {
 	if s == nil {
 		return
 	}
@@ -460,13 +470,13 @@ func (s *store) recordMetricsExportRequestOutcome(req *openrtb.BidRequest, sourc
 	bucket := metricsExportBucket{
 		Hour:                recordedAt.Truncate(time.Hour),
 		SourceID:            sourceID,
-		CampaignID:          campaignID,
+		DemandEndpointID:    demandEndpointID,
 		CountryCode:         countryCode,
 		BundleID:            bundleID,
 		AdRequests:          1,
 		AdOpportunities:     1,
 		FilledOpportunities: filledOpportunities,
-		ChannelRevenue:      channelRevenue,
+		SourceIDRevenue:     sourceRevenue,
 		TotalRevenue:        totalRevenue,
 	}
 
@@ -475,11 +485,11 @@ func (s *store) recordMetricsExportRequestOutcome(req *openrtb.BidRequest, sourc
 	s.addMetricsExportBucketLocked(bucket)
 	if requestID != "" && filledOpportunities > 0 {
 		s.metricsExportDelivery[requestID] = metricsExportDeliveryContext{
-			RecordedAt:  recordedAt,
-			SourceID:    bucket.SourceID,
-			CampaignID:  bucket.CampaignID,
-			CountryCode: normalizeMetricsCountryCode(bucket.CountryCode),
-			BundleID:    normalizeMetricsBundleID(bucket.BundleID),
+			RecordedAt:       recordedAt,
+			SourceID:         bucket.SourceID,
+			DemandEndpointID: bucket.DemandEndpointID,
+			CountryCode:      normalizeMetricsCountryCode(bucket.CountryCode),
+			BundleID:         normalizeMetricsBundleID(bucket.BundleID),
 		}
 	}
 	s.pruneMetricsExportDeliveryLocked(recordedAt)
@@ -511,12 +521,12 @@ func (s *store) recordMetricsExportImpression(requestID, countryCode, bundleID s
 		}
 	}
 	s.addMetricsExportBucketLocked(metricsExportBucket{
-		Hour:        recordedAt.Truncate(time.Hour),
-		SourceID:    context.SourceID,
-		CampaignID:  context.CampaignID,
-		CountryCode: context.CountryCode,
-		BundleID:    context.BundleID,
-		Impressions: 1,
+		Hour:             recordedAt.Truncate(time.Hour),
+		SourceID:         context.SourceID,
+		DemandEndpointID: context.DemandEndpointID,
+		CountryCode:      context.CountryCode,
+		BundleID:         context.BundleID,
+		Impressions:      1,
 	})
 	s.pruneMetricsExportDeliveryLocked(recordedAt)
 	s.stateGeneration.Add(1)
@@ -560,7 +570,7 @@ func metricsExportBucketKey(bucket metricsExportBucket) string {
 	return fmt.Sprintf("%s|%d|%d|%s|%s",
 		bucket.Hour.UTC().Truncate(time.Hour).Format(time.RFC3339),
 		bucket.SourceID,
-		bucket.CampaignID,
+		bucket.DemandEndpointID,
 		normalizeMetricsCountryCode(bucket.CountryCode),
 		normalizeMetricsBundleID(bucket.BundleID),
 	)
@@ -996,14 +1006,14 @@ func buildMetricsExportRows(buckets []metricsExportBucket, query metricsExportQu
 	}
 
 	type groupedRow struct {
-		stamp       time.Time
-		date        string
-		hour        string
-		sourceID    int
-		campaignID  int
-		countryCode string
-		bundleID    string
-		acc         metricsExportAccumulator
+		stamp            time.Time
+		date             string
+		hour             string
+		sourceID         int
+		demandEndpointID int
+		countryCode      string
+		bundleID         string
+		acc              metricsExportAccumulator
 	}
 
 	rowsByKey := make(map[string]*groupedRow)
@@ -1034,18 +1044,18 @@ func buildMetricsExportRows(buckets []metricsExportBucket, query metricsExportQu
 
 		countryCode := normalizeMetricsCountryCode(bucket.CountryCode)
 		bundleID := normalizeMetricsBundleID(bucket.BundleID)
-		key := fmt.Sprintf("%s|%d|%d|%s|%s", timeKey, bucket.SourceID, bucket.CampaignID, countryCode, bundleID)
+		key := fmt.Sprintf("%s|%d|%d|%s|%s", timeKey, bucket.SourceID, bucket.DemandEndpointID, countryCode, bundleID)
 
 		row := rowsByKey[key]
 		if row == nil {
 			row = &groupedRow{
-				stamp:       stamp,
-				date:        date,
-				hour:        rowHour,
-				sourceID:    bucket.SourceID,
-				campaignID:  bucket.CampaignID,
-				countryCode: countryCode,
-				bundleID:    bundleID,
+				stamp:            stamp,
+				date:             date,
+				hour:             rowHour,
+				sourceID:         bucket.SourceID,
+				demandEndpointID: bucket.DemandEndpointID,
+				countryCode:      countryCode,
+				bundleID:         bundleID,
 			}
 			rowsByKey[key] = row
 		}
@@ -1059,13 +1069,13 @@ func buildMetricsExportRows(buckets []metricsExportBucket, query metricsExportQu
 	sort.Slice(ordered, func(i, j int) bool {
 		if ordered[i].stamp.Equal(ordered[j].stamp) {
 			if ordered[i].sourceID == ordered[j].sourceID {
-				if ordered[i].campaignID == ordered[j].campaignID {
+				if ordered[i].demandEndpointID == ordered[j].demandEndpointID {
 					if ordered[i].countryCode == ordered[j].countryCode {
 						return ordered[i].bundleID < ordered[j].bundleID
 					}
 					return ordered[i].countryCode < ordered[j].countryCode
 				}
-				return ordered[i].campaignID < ordered[j].campaignID
+				return ordered[i].demandEndpointID < ordered[j].demandEndpointID
 			}
 			return ordered[i].sourceID < ordered[j].sourceID
 		}
@@ -1078,15 +1088,15 @@ func buildMetricsExportRows(buckets []metricsExportBucket, query metricsExportQu
 			Date:                row.date,
 			Hour:                row.hour,
 			SourceID:            row.sourceID,
-			CampaignID:          row.campaignID,
+			DemandEndpointID:    row.demandEndpointID,
 			CountryCode:         row.countryCode,
 			Country:             metricsCountryName(row.countryCode),
 			BundleID:            row.bundleID,
 			AdRequests:          row.acc.AdRequests,
 			AdOpportunities:     row.acc.AdOpportunities,
 			Impressions:         row.acc.Impressions,
-			ChannelRevenue:      row.acc.ChannelRevenue,
-			ChannelECPM:         analyticsCPM(row.acc.ChannelRevenue, row.acc.FilledOpportunities),
+			SourceIDRevenue:     row.acc.SourceIDRevenue,
+			SourceIDECPM:        analyticsCPM(row.acc.SourceIDRevenue, row.acc.FilledOpportunities),
 			TotalRevenue:        row.acc.TotalRevenue,
 			AdRequestFillRate:   analyticsPercent(row.acc.FilledOpportunities, row.acc.AdRequests),
 			OpportunityFillRate: analyticsPercent(row.acc.Impressions, row.acc.AdOpportunities),
@@ -1112,16 +1122,16 @@ func renderMetricsExportCSV(rows []metricsExportRow, groupBy string) (string, er
 	}
 	headers = append(headers,
 		"Source ID",
-		"Campaign ID",
+		"Demand ORTB Endpoint ID",
 		"Country Code",
 		"Country",
 		"Bundle ID",
 		"Ad Requests",
 		"Ad Opportunities",
 		"Impressions",
-		"Channel Revenue",
-		"Channel eCPM",
-		"Total Revenue",
+		"Source ID Revenue",
+		"Source ID eCPM",
+		"Demand ORTB Endpoints Revenue",
 		"eCPM",
 		"Fill Rate (Ad Req)",
 		"Fill Rate (Ad Ops)",
@@ -1140,15 +1150,15 @@ func renderMetricsExportCSV(rows []metricsExportRow, groupBy string) (string, er
 		}
 		record = append(record,
 			metricsExportIntString(row.SourceID),
-			metricsExportIntString(row.CampaignID),
+			metricsExportIntString(row.DemandEndpointID),
 			row.CountryCode,
 			row.Country,
 			row.BundleID,
 			strconv.FormatInt(row.AdRequests, 10),
 			strconv.FormatInt(row.AdOpportunities, 10),
 			strconv.FormatInt(row.Impressions, 10),
-			fmt.Sprintf("%.6f", row.ChannelRevenue),
-			fmt.Sprintf("%.2f", row.ChannelECPM),
+			fmt.Sprintf("%.6f", row.SourceIDRevenue),
+			fmt.Sprintf("%.2f", row.SourceIDECPM),
 			fmt.Sprintf("%.6f", row.TotalRevenue),
 			fmt.Sprintf("%.2f", row.ECPM),
 			fmt.Sprintf("%.2f", row.AdRequestFillRate),
@@ -1306,6 +1316,6 @@ func (a *metricsExportAccumulator) addBucket(bucket metricsExportBucket) {
 	a.AdOpportunities += bucket.AdOpportunities
 	a.FilledOpportunities += bucket.FilledOpportunities
 	a.Impressions += bucket.Impressions
-	a.ChannelRevenue += bucket.ChannelRevenue
+	a.SourceIDRevenue += bucket.SourceIDRevenue
 	a.TotalRevenue += bucket.TotalRevenue
 }

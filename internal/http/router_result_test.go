@@ -123,7 +123,7 @@ func TestEventRoutesCleanBundleFromTrackingQuery(t *testing.T) {
 	}
 }
 
-func TestDeliveryBlockedExportRowLeavesCampaignUnattributed(t *testing.T) {
+func TestDeliveryBlockedExportRowLeavesDemandEndpointUnattributed(t *testing.T) {
 	app := fiber.New()
 	metrics := monitor.New()
 	s := newStore()
@@ -172,8 +172,8 @@ func TestDeliveryBlockedExportRowLeavesCampaignUnattributed(t *testing.T) {
 	if len(buckets) != 1 {
 		t.Fatalf("expected 1 export bucket, got %d", len(buckets))
 	}
-	if got := buckets[0].CampaignID; got != 0 {
-		t.Fatalf("expected delivery-blocked export row to leave campaign unattributed, got campaign id %d", got)
+	if got := buckets[0].DemandEndpointID; got != 0 {
+		t.Fatalf("expected delivery-blocked export row to leave demand endpoint unattributed, got endpoint id %d", got)
 	}
 	if got := buckets[0].SourceID; got != 42 {
 		t.Fatalf("expected source id 42 in export bucket, got %d", got)
@@ -183,5 +183,66 @@ func TestDeliveryBlockedExportRowLeavesCampaignUnattributed(t *testing.T) {
 	}
 	if got := buckets[0].Impressions; got != 0 {
 		t.Fatalf("expected no impressions for blocked delivery, got %d", got)
+	}
+}
+
+func TestServedExportRowUsesDemandORTBEndpointID(t *testing.T) {
+	app := fiber.New()
+	metrics := monitor.New()
+	s := newStore()
+	s.campaigns[7] = &Campaign{
+		ID:          7,
+		Name:        "Served Campaign",
+		Status:      1,
+		ADomain:     "ads.example",
+		BudgetDaily: 10,
+	}
+	s.rebuildCampaignIndexLocked()
+
+	req := &openrtb.BidRequest{
+		ID:  "req-served-export",
+		App: &openrtb.App{Bundle: "com.example.app"},
+		Device: &openrtb.Device{
+			Geo: &openrtb.Geo{Country: "USA"},
+		},
+	}
+	result := &pipeline.Result{
+		Winner: &openrtb.Bid{
+			ID:        "bid-1",
+			CrID:      "creative-1",
+			Seat:      "seat-1",
+			Price:     4.0,
+			ADomain:   []string{"ads.example"},
+			DemandSrc: "demand-ep-9",
+		},
+		WinPrice:  4.0,
+		VAST:      "<VAST/>",
+		AdapterID: "demand-ep-9",
+	}
+
+	app.Get("/", func(c *fiber.Ctx) error {
+		return handlePipelineServeResult(c, &pipeline.Pipeline{}, metrics, s, req, result, &SupplyTag{ID: 42}, "supply_tag")
+	})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/", nil))
+	if err != nil {
+		t.Fatalf("unexpected fiber test error: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected served XML status %d, got %d", http.StatusOK, resp.StatusCode)
+	}
+
+	buckets := s.snapshotMetricsExportBuckets()
+	if len(buckets) != 1 {
+		t.Fatalf("expected 1 export bucket, got %d", len(buckets))
+	}
+	if got := buckets[0].DemandEndpointID; got != 9 {
+		t.Fatalf("expected demand ORTB endpoint id 9, got %d", got)
+	}
+	if got := buckets[0].SourceIDRevenue; got != 0.003 {
+		t.Fatalf("expected source id revenue 0.003, got %.6f", got)
+	}
+	if got := buckets[0].TotalRevenue; got != 0.004 {
+		t.Fatalf("expected total revenue 0.004, got %.6f", got)
 	}
 }

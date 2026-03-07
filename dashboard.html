@@ -390,7 +390,7 @@ textarea{resize:vertical;min-height:68px}
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;gap:16px;flex-wrap:wrap">
     <div>
       <h3 style="font-size:16px;margin:0">Metrics Export</h3>
-      <p style="font-size:13px;color:var(--fg3);margin:4px 0 0">Export metrics by preset total, date, or hour with source, campaign, country, and bundle dimensions in UTC.</p>
+      <p style="font-size:13px;color:var(--fg3);margin:4px 0 0">Export metrics by preset total, date, or hour with source, demand endpoint, country, and bundle dimensions in UTC.</p>
     </div>
     <div style="display:flex;gap:8px">
       <button class="btn btn-secondary btn-sm" onclick="loadMetricsExport()">↻ Refresh</button>
@@ -444,9 +444,8 @@ textarea{resize:vertical;min-height:68px}
     <div class="card-body table-wrap">
       <table>
         <thead id="mxHead"><tr>
-          <th>Source ID</th><th>Campaign ID</th><th>Country Code</th><th>Country</th><th>Bundle ID</th>
-          <th>Ad Requests</th><th>Ad Opportunities</th><th>Impressions</th><th>Channel Revenue</th><th>Channel eCPM</th>
-          <th>Total Revenue</th><th>eCPM</th><th>Fill Rate (Ad Req)</th><th>Fill Rate (Ad Ops)</th>
+          <th>Source ID</th><th>Demand ORTB Endpoint ID</th><th>Country Code</th><th>Country</th><th>Bundle ID</th>
+          <th>Ad Requests</th><th>Ad Opportunities</th><th>Impressions</th><th>Source ID Revenue</th><th>Source ID eCPM</th><th>Demand ORTB Endpoints Revenue</th><th>eCPM</th><th>Fill Rate (Ad Req)</th><th>Fill Rate (Ad Ops)</th>
         </tr></thead>
         <tbody id="mxBody"><tr><td colspan="14" class="empty">No export data yet</td></tr></tbody>
       </table>
@@ -1269,7 +1268,7 @@ function metricsExportHeaders(groupBy){
   const headers=[];
   if(groupBy==='date'||groupBy==='hour') headers.push('Date');
   if(groupBy==='hour') headers.push('Hour');
-  headers.push('Source ID','Campaign ID','Country Code','Country','Bundle ID','Ad Requests','Ad Opportunities','Impressions','Channel Revenue','Channel eCPM','Total Revenue','eCPM','Fill Rate (Ad Req)','Fill Rate (Ad Ops)');
+  headers.push('Source ID','Demand ORTB Endpoint ID','Country Code','Country','Bundle ID','Ad Requests','Ad Opportunities','Impressions','Source ID Revenue','Source ID eCPM','Demand ORTB Endpoints Revenue','eCPM','Fill Rate (Ad Req)','Fill Rate (Ad Ops)');
   return headers;
 }
 function metricsExportRowCells(row,groupBy){
@@ -1278,15 +1277,15 @@ function metricsExportRowCells(row,groupBy){
   if(groupBy==='hour') cells.push(esc(row.hour||'—'));
   cells.push(
     esc(row.source_id?String(row.source_id):'—'),
-    esc(row.campaign_id?String(row.campaign_id):'—'),
+    esc(row.demand_endpoint_id?String(row.demand_endpoint_id):'—'),
     esc(row.country_code||'—'),
     esc(row.country||'—'),
     esc(row.bundle_id||'—'),
     fmtNum(row.ad_requests||0),
     fmtNum(row.ad_opportunities||0),
     fmtNum(row.impressions||0),
-    fmtMoney(row.channel_revenue||0),
-    `$${Number(row.channel_ecpm||0).toFixed(2)}`,
+    fmtMoney(row.source_id_revenue||0),
+    `$${Number(row.source_id_ecpm||0).toFixed(2)}`,
     fmtMoney(row.total_revenue||0),
     `$${Number(row.ecpm||0).toFixed(2)}`,
     fmtPctValue(row.ad_request_fill_rate||0),
