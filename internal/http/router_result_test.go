@@ -123,6 +123,31 @@ func TestEventRoutesCleanBundleFromTrackingQuery(t *testing.T) {
 	}
 }
 
+func TestEventRoutesRecordViewableImpression(t *testing.T) {
+	app := fiber.New()
+	metrics := monitor.New()
+	registerEventRoutes(app, newStore(), metrics)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/event/viewable?rid=req-1&bndl=com.example.app", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("unexpected fiber test error: %v", err)
+	}
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected status %d, got %d", http.StatusNoContent, resp.StatusCode)
+	}
+	if got := metrics.ViewableImpressions.Load(); got != 1 {
+		t.Fatalf("expected one viewable impression, got %d", got)
+	}
+	events := metrics.GetTrafficEvents("vast_viewable")
+	if len(events) != 1 {
+		t.Fatalf("expected one vast viewable event, got %d", len(events))
+	}
+	if got := events[0].Bundle; got != "com.example.app" {
+		t.Fatalf("expected clean bundle in viewable event, got %q", got)
+	}
+}
+
 func TestDeliveryBlockedExportRowLeavesDemandEndpointUnattributed(t *testing.T) {
 	app := fiber.New()
 	metrics := monitor.New()

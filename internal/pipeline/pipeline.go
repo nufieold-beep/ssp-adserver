@@ -48,6 +48,25 @@ type Result struct {
 	NotificationsPending bool
 }
 
+type requestTelemetry struct {
+	bundle        string
+	env           string
+	supply        string
+	floorDecision floor.Decision
+}
+
+type adapterCollectionSummary struct {
+	candidateBids       []openrtb.Bid
+	errorCount          int
+	timeoutCount        int
+	noBidCount          int
+	attemptedAdapterIDs []string
+	errorAdapterIDs     []string
+	timeoutAdapterIDs   []string
+	noBidAdapterIDs     []string
+	noBidReasons        []string
+}
+
 // Execute runs the full ad serving pipeline for a single request.
 // baseURL is the publicly-reachable server origin for VAST tracking URLs.
 // adapterIDs optionally restricts which demand adapters receive bid requests.
@@ -55,6 +74,13 @@ type Result struct {
 func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL string, adapterIDs ...[]string) *Result {
 	start := time.Now()
 	result := &Result{RequestID: req.ID, BaseURL: baseURL}
+	execCtx, cancel := p.resolveExecutionContext(ctx, req)
+	defer cancel()
+	telemetry := requestTelemetry{
+		bundle: bundleForRequest(req),
+		env:    detectRequestEnvironment(req),
+		supply: requestTagID(req),
+	}
 
 	hasAdRequestSubscriber := p.Bus != nil && p.Bus.HasSubscribers(eventbus.EvtAdRequest)
 	hasFloorSubscriber := p.Bus != nil && p.Bus.HasSubscribers(eventbus.EvtFloorApplied)
@@ -64,93 +90,206 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 	hasAuctionEndSubscriber := p.Bus != nil && p.Bus.HasSubscribers(eventbus.EvtAuctionEnd)
 
 	// ── Stage 1: Record request ──
-	p.Metrics.RecordAdRequest()
-	p.Metrics.RecordAdOpp()
+	p.recordRequestStart(req, telemetry, hasAdRequestSubscriber)
 
-	bundle := ""
-	if req.App != nil {
-		bundle = openrtb.CleanBundleValue(req.App.Bundle, req.App.ID, req.App.StoreURL)
-	}
 	if hasAdRequestSubscriber {
 		p.Bus.Publish(eventbus.Event{Type: eventbus.EvtAdRequest, Data: map[string]interface{}{
-			"request_id": req.ID, "bundle": bundle,
+			"request_id": req.ID, "bundle": telemetry.bundle,
 		}})
 	}
-
-	p.Metrics.AddTrafficEvent(monitor.TrafficEvent{
-		Type: "ortb_request", RequestID: req.ID, Env: detectRequestEnvironment(req),
-		Details: fmt.Sprintf("bundle=%s tag=%s floor=%.2f", bundle, req.Imp[0].TagID, req.Imp[0].BidFloor),
-		Bundle:  bundle,
-		Supply:  req.Imp[0].TagID,
-	})
 
 	// ── Stage 2: Dynamic floor optimization ──
 	// GAM and Magnite both apply dynamic floors per-request based on
 	// geo, device type, time of day, and historical data.
-	effectiveFloor := p.FloorEngine.Calculate(req)
-	if effectiveFloor > req.Imp[0].BidFloor {
-		req.Imp[0].BidFloor = effectiveFloor
-	}
+	telemetry.floorDecision = p.applyDynamicFloor(req, telemetry, hasFloorSubscriber)
 	if hasFloorSubscriber {
 		p.Bus.Publish(eventbus.Event{Type: eventbus.EvtFloorApplied, Data: map[string]interface{}{
-			"request_id": req.ID, "floor": req.Imp[0].BidFloor,
+			"request_id": req.ID, "floor": requestFloor(req), "mode": telemetry.floorDecision.Mode,
 		}})
 	}
 
 	// ── Stage 3: Fan-out bid requests ──
 	// Send bid requests to all eligible demand adapters in parallel.
 	// Each adapter has its own timeout and QPS limit (GAM traffic shaping).
-	defaultTMaxMs := p.DefaultTMax
-	if defaultTMaxMs <= 0 {
-		defaultTMaxMs = 500
-	}
-	tmax := time.Duration(defaultTMaxMs) * time.Millisecond
-	if req.TMax > 0 {
-		tmax = time.Duration(int(req.TMax)) * time.Millisecond
-	}
+	tmax := p.resolveBidTimeout(execCtx, req)
 
 	bidStart := time.Now()
 	var bidResults []*adapter.BidResult
 	if len(adapterIDs) > 0 && adapterIDs[0] != nil {
 		// Mapped mode: only send to selected demand sources
-		bidResults = p.Registry.FanOutTo(ctx, req, tmax, adapterIDs[0])
+		bidResults = p.Registry.FanOutTo(execCtx, req, tmax, adapterIDs[0])
 	} else {
 		// Unmapped mode: fan out to all active adapters
-		bidResults = p.Registry.FanOut(ctx, req, tmax)
+		bidResults = p.Registry.FanOut(execCtx, req, tmax)
 	}
 	result.BidLatency = time.Since(bidStart)
-	p.Metrics.RecordBidLatency(float64(result.BidLatency.Milliseconds()))
+	if p.Metrics != nil {
+		p.Metrics.RecordBidLatency(float64(result.BidLatency.Milliseconds()))
+	}
 
 	// ── Stage 4: Collect and flatten bids ──
-	var candidateBids []openrtb.Bid
-	adapterErrorCount := 0
-	adapterTimeoutCount := 0
-	adapterNoBidCount := 0
-	attemptedAdapterIDs := make([]string, 0, len(bidResults))
-	errorAdapterIDs := make([]string, 0, len(bidResults))
-	timeoutAdapterIDs := make([]string, 0, len(bidResults))
-	noBidAdapterIDs := make([]string, 0, len(bidResults))
-	noBidAdapterReasons := make([]string, 0, len(bidResults))
+	summary := p.collectCandidateBids(req, telemetry, bidResults, hasErrorSubscriber, hasNoBidSubscriber, hasBidResponseSubscriber)
+
+	if len(summary.candidateBids) == 0 {
+		reasonCode := buildNoBidReasonCode(len(bidResults), summary.errorCount, summary.timeoutCount, summary.noBidCount)
+		reasonDetails := buildNoBidReasonDetails(len(bidResults), summary.errorCount, summary.timeoutCount, summary.noBidCount, summary.attemptedAdapterIDs, summary.errorAdapterIDs, summary.timeoutAdapterIDs, summary.noBidAdapterIDs, summary.noBidReasons)
+		return p.finishNoBidResult(result, start, req, telemetry, reasonCode, reasonDetails)
+	}
+	if err := execCtx.Err(); err != nil {
+		return p.finishNoBidResult(result, start, req, telemetry, "pipeline_timeout", err.Error())
+	}
+
+	// ── Stage 5: Ad quality / brand safety scan ──
+	candidateBids := summary.candidateBids
+	if p.AQScanner != nil {
+		candidateBids = p.AQScanner.Filter(candidateBids, req)
+	}
+	if len(candidateBids) == 0 {
+		return p.finishNoBidResult(result, start, req, telemetry, "filtered_by_ad_quality", "filtered_by_ad_quality")
+	}
+	if err := execCtx.Err(); err != nil {
+		return p.finishNoBidResult(result, start, req, telemetry, "pipeline_timeout", err.Error())
+	}
+
+	// ── Stage 6: Open-market auction ──
+	auctionType := p.AuctionType
+	auctionResult := auction.Run(candidateBids, requestFloor(req), auctionType)
+
+	if hasAuctionEndSubscriber {
+		p.Bus.PublishSync(eventbus.Event{Type: eventbus.EvtAuctionEnd, Data: map[string]interface{}{
+			"request_id": req.ID, "winner_id": winnerIDOrEmpty(auctionResult),
+			"win_price": auctionResult.WinPrice, "auction_type": auctionType,
+			"bid_count": len(candidateBids),
+		}})
+	}
+
+	if auctionResult.Winner == nil {
+		return p.finishNoBidResult(result, start, req, telemetry, "no_auction_winner", "no_auction_winner")
+	}
+	if err := execCtx.Err(); err != nil {
+		return p.finishNoBidResult(result, start, req, telemetry, "pipeline_timeout", err.Error())
+	}
+
+	// ── Stage 7: Build final VAST before any notices are fired ──
+	winner := auctionResult.Winner
+	xml := vast.Build(winner, req, result.BaseURL)
+	if xml == "" {
+		if p.Metrics != nil {
+			p.Metrics.RecordError()
+		}
+		result.Error = fmt.Errorf("vast build failed for bid %s", winner.ID)
+		result.TotalLatency = time.Since(start)
+		return result
+	}
+	if p.FloorEngine != nil {
+		p.FloorEngine.ObserveWinPrice(auctionResult.WinPrice)
+	}
+
+	// ── Stage 8: Final notices happen only after delivery approval ──
+
+	if p.Metrics != nil {
+		p.Metrics.AddTrafficEvent(monitor.TrafficEvent{
+			Type:      "ortb_response",
+			RequestID: req.ID,
+			Env:       telemetry.env,
+			Details: fmt.Sprintf("winner=%s price=%.2f clear=%.2f type=%s floor=%.2f mode=%s latency_ms=%d nurl=%v burl=%v",
+				winner.ID, winner.Price, auctionResult.WinPrice, auctionType,
+				telemetry.floorDecision.AppliedFloor, telemetry.floorDecision.Mode, time.Since(start).Milliseconds(),
+				winner.NURL != "", winner.BURL != ""),
+			Bundle: telemetry.bundle,
+			Supply: telemetry.supply,
+			Price:  fmt.Sprintf("%.2f", auctionResult.WinPrice),
+		})
+	}
+
+	result.Winner = winner
+	result.WinPrice = auctionResult.WinPrice
+	result.Losers = auctionResult.Losers
+	result.VAST = xml
+	result.AuctionType = auctionType
+	result.AdapterID = winner.DemandSrc
+	if result.AdapterID == "" {
+		result.AdapterID = winner.Seat
+	}
+	result.NotificationsPending = true
+	result.TotalLatency = time.Since(start)
+	return result
+}
+
+func (p *Pipeline) recordRequestStart(req *openrtb.BidRequest, telemetry requestTelemetry, hasAdRequestSubscriber bool) {
+	if p.Metrics == nil {
+		return
+	}
+	p.Metrics.RecordAdRequest()
+	p.Metrics.RecordAdOpp()
+	p.Metrics.AddTrafficEvent(monitor.TrafficEvent{
+		Type:      "ortb_request",
+		RequestID: req.ID,
+		Env:       telemetry.env,
+		Details:   fmt.Sprintf("bundle=%s tag=%s floor=%.2f", telemetry.bundle, telemetry.supply, requestFloor(req)),
+		Bundle:    telemetry.bundle,
+		Supply:    telemetry.supply,
+	})
+}
+
+func (p *Pipeline) applyDynamicFloor(req *openrtb.BidRequest, telemetry requestTelemetry, hasFloorSubscriber bool) floor.Decision {
+	decision := floor.Decision{BaseFloor: requestFloor(req), AppliedFloor: requestFloor(req), Mode: "none"}
+	if decision.AppliedFloor > 0 {
+		decision.Mode = "request"
+	}
+	if p.FloorEngine != nil {
+		decision = p.FloorEngine.CalculateDecision(req)
+	}
+	if imp := primaryImp(req); imp != nil && decision.AppliedFloor > imp.BidFloor {
+		imp.BidFloor = decision.AppliedFloor
+	}
+	if p.Metrics != nil {
+		details := fmt.Sprintf("mode=%s base=%.2f applied=%.2f adaptive=%.2f", decision.Mode, decision.BaseFloor, decision.AppliedFloor, decision.AdaptiveFloor)
+		if decision.MatchedRuleID != "" {
+			details += fmt.Sprintf(" rule=%s", decision.MatchedRuleID)
+		}
+		p.Metrics.AddTrafficEvent(monitor.TrafficEvent{
+			Type:      "floor_decision",
+			RequestID: req.ID,
+			Env:       telemetry.env,
+			Details:   details,
+			Bundle:    telemetry.bundle,
+			Supply:    telemetry.supply,
+			Price:     fmt.Sprintf("%.2f", decision.AppliedFloor),
+		})
+	}
+	return decision
+}
+
+func (p *Pipeline) collectCandidateBids(req *openrtb.BidRequest, telemetry requestTelemetry, bidResults []*adapter.BidResult, hasErrorSubscriber, hasNoBidSubscriber, hasBidResponseSubscriber bool) adapterCollectionSummary {
+	summary := adapterCollectionSummary{
+		candidateBids:       make([]openrtb.Bid, 0, len(bidResults)),
+		attemptedAdapterIDs: make([]string, 0, len(bidResults)),
+		errorAdapterIDs:     make([]string, 0, len(bidResults)),
+		timeoutAdapterIDs:   make([]string, 0, len(bidResults)),
+		noBidAdapterIDs:     make([]string, 0, len(bidResults)),
+		noBidReasons:        make([]string, 0, len(bidResults)),
+	}
 	for _, br := range bidResults {
 		if adapterID := strings.TrimSpace(br.AdapterID); adapterID != "" {
-			attemptedAdapterIDs = append(attemptedAdapterIDs, adapterID)
+			summary.attemptedAdapterIDs = append(summary.attemptedAdapterIDs, adapterID)
 		}
 		if br.Error != nil {
-			adapterErrorCount++
-			errorAdapterIDs = append(errorAdapterIDs, br.AdapterID)
+			summary.errorCount++
+			summary.errorAdapterIDs = append(summary.errorAdapterIDs, br.AdapterID)
 			if br.TimedOut {
-				adapterTimeoutCount++
-				timeoutAdapterIDs = append(timeoutAdapterIDs, br.AdapterID)
+				summary.timeoutCount++
+				summary.timeoutAdapterIDs = append(summary.timeoutAdapterIDs, br.AdapterID)
 			}
 			if p.Metrics != nil {
 				p.Metrics.RecordAdapterErrorReason(classifyAdapterErrorReason(br.AdapterID, br.Error, br.TimedOut))
 				p.Metrics.AddTrafficEvent(monitor.TrafficEvent{
 					Type:      "adapter_error",
 					RequestID: req.ID,
-					Env:       detectRequestEnvironment(req),
+					Env:       telemetry.env,
 					Details:   formatAdapterErrorDetail(br.AdapterID, br.Error, br.TimedOut),
-					Bundle:    bundle,
-					Supply:    req.Imp[0].TagID,
+					Bundle:    telemetry.bundle,
+					Supply:    telemetry.supply,
 				})
 			}
 			if hasErrorSubscriber {
@@ -161,9 +300,9 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 			continue
 		}
 		if br.NoBid {
-			adapterNoBidCount++
-			noBidAdapterIDs = append(noBidAdapterIDs, br.AdapterID)
-			noBidAdapterReasons = append(noBidAdapterReasons, formatNoBidAdapterDetail(br.AdapterID, br.NoBidReason))
+			summary.noBidCount++
+			summary.noBidAdapterIDs = append(summary.noBidAdapterIDs, br.AdapterID)
+			summary.noBidReasons = append(summary.noBidReasons, formatNoBidAdapterDetail(br.AdapterID, br.NoBidReason))
 			if hasNoBidSubscriber {
 				p.Bus.Publish(eventbus.Event{Type: eventbus.EvtNoBid, Data: map[string]interface{}{
 					"request_id": req.ID, "adapter": br.AdapterID,
@@ -182,110 +321,110 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 		for i := range br.Bids {
 			br.Bids[i].DemandSrc = br.AdapterID
 		}
-		candidateBids = append(candidateBids, br.Bids...)
+		summary.candidateBids = append(summary.candidateBids, br.Bids...)
 	}
+	return summary
+}
 
-	if len(candidateBids) == 0 {
-		reasonDetails := buildNoBidReasonDetails(len(bidResults), adapterErrorCount, adapterTimeoutCount, adapterNoBidCount, attemptedAdapterIDs, errorAdapterIDs, timeoutAdapterIDs, noBidAdapterIDs, noBidAdapterReasons)
-		if p.Metrics != nil {
-			p.Metrics.RecordNoBidReason(buildNoBidReasonCode(len(bidResults), adapterErrorCount, adapterTimeoutCount, adapterNoBidCount))
-		}
-		p.Metrics.RecordNoBid()
-		p.Metrics.AddTrafficEvent(monitor.TrafficEvent{
-			Type: "no_bid", RequestID: req.ID, Env: detectRequestEnvironment(req),
-			Details: fmt.Sprintf("%s floor=%.2f", reasonDetails, req.Imp[0].BidFloor),
-			Bundle:  bundle,
-			Supply:  req.Imp[0].TagID,
-		})
-		result.NoBid = true
-		result.VAST = vast.BuildNoAd()
-		result.TotalLatency = time.Since(start)
-		return result
-	}
-
-	// ── Stage 5: Ad quality / brand safety scan ──
-	candidateBids = p.AQScanner.Filter(candidateBids, req)
-	if len(candidateBids) == 0 {
-		if p.Metrics != nil {
-			p.Metrics.RecordNoBidReason("filtered_by_ad_quality")
-		}
+func (p *Pipeline) finishNoBidResult(result *Result, start time.Time, req *openrtb.BidRequest, telemetry requestTelemetry, reasonCode, reasonDetails string) *Result {
+	if p.Metrics != nil {
+		p.Metrics.RecordNoBidReason(reasonCode)
 		p.Metrics.RecordNoBid()
 		p.Metrics.AddTrafficEvent(monitor.TrafficEvent{
 			Type:      "no_bid",
 			RequestID: req.ID,
-			Env:       detectRequestEnvironment(req),
-			Details:   fmt.Sprintf("filtered_by_ad_quality floor=%.2f", req.Imp[0].BidFloor),
-			Bundle:    bundle,
-			Supply:    req.Imp[0].TagID,
+			Env:       telemetry.env,
+			Details:   formatPipelineNoBidDetail(reasonDetails, telemetry.floorDecision, time.Since(start)),
+			Bundle:    telemetry.bundle,
+			Supply:    telemetry.supply,
+			Price:     fmt.Sprintf("%.2f", telemetry.floorDecision.AppliedFloor),
 		})
-		result.NoBid = true
-		result.VAST = vast.BuildNoAd()
-		result.TotalLatency = time.Since(start)
-		return result
 	}
-
-	// ── Stage 6: Open-market auction ──
-	auctionType := p.AuctionType
-	auctionResult := auction.Run(candidateBids, req.Imp[0].BidFloor, auctionType)
-
-	if hasAuctionEndSubscriber {
-		p.Bus.PublishSync(eventbus.Event{Type: eventbus.EvtAuctionEnd, Data: map[string]interface{}{
-			"request_id": req.ID, "winner_id": winnerIDOrEmpty(auctionResult),
-			"win_price": auctionResult.WinPrice, "auction_type": auctionType,
-			"bid_count": len(candidateBids),
-		}})
-	}
-
-	if auctionResult.Winner == nil {
-		if p.Metrics != nil {
-			p.Metrics.RecordNoBidReason("no_auction_winner")
-		}
-		p.Metrics.RecordNoBid()
-		p.Metrics.AddTrafficEvent(monitor.TrafficEvent{
-			Type:      "no_bid",
-			RequestID: req.ID,
-			Env:       detectRequestEnvironment(req),
-			Details:   fmt.Sprintf("no_auction_winner floor=%.2f", req.Imp[0].BidFloor),
-			Bundle:    bundle,
-			Supply:    req.Imp[0].TagID,
-		})
-		result.NoBid = true
-		result.VAST = vast.BuildNoAd()
-		result.TotalLatency = time.Since(start)
-		return result
-	}
-
-	// ── Stage 7: Build final VAST before any notices are fired ──
-	winner := auctionResult.Winner
-	xml := vast.Build(winner, req, result.BaseURL)
-	if xml == "" {
-		p.Metrics.RecordError()
-		result.Error = fmt.Errorf("vast build failed for bid %s", winner.ID)
-		result.TotalLatency = time.Since(start)
-		return result
-	}
-
-	// ── Stage 8: Final notices happen only after delivery approval ──
-
-	p.Metrics.AddTrafficEvent(monitor.TrafficEvent{
-		Type: "ortb_response", RequestID: req.ID, Env: detectRequestEnvironment(req),
-		Details: fmt.Sprintf("winner=%s price=%.2f clear=%.2f type=%s nurl=%v burl=%v",
-			winner.ID, winner.Price, auctionResult.WinPrice, auctionType,
-			winner.NURL != "", winner.BURL != ""),
-	})
-
-	result.Winner = winner
-	result.WinPrice = auctionResult.WinPrice
-	result.Losers = auctionResult.Losers
-	result.VAST = xml
-	result.AuctionType = auctionType
-	result.AdapterID = winner.DemandSrc
-	if result.AdapterID == "" {
-		result.AdapterID = winner.Seat
-	}
-	result.NotificationsPending = true
+	result.NoBid = true
+	result.VAST = vast.BuildNoAdForRequest(req)
 	result.TotalLatency = time.Since(start)
 	return result
+}
+
+func (p *Pipeline) resolveExecutionContext(ctx context.Context, req *openrtb.BidRequest) (context.Context, context.CancelFunc) {
+	timeout := p.defaultExecutionTimeout(req)
+	if timeout <= 0 {
+		return ctx, func() {}
+	}
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) <= timeout {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
+func (p *Pipeline) resolveBidTimeout(ctx context.Context, req *openrtb.BidRequest) time.Duration {
+	timeout := p.defaultExecutionTimeout(req)
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining > 0 && (timeout <= 0 || remaining < timeout) {
+			timeout = remaining
+		}
+	}
+	if timeout <= 0 {
+		return 500 * time.Millisecond
+	}
+	return timeout
+}
+
+func (p *Pipeline) defaultExecutionTimeout(req *openrtb.BidRequest) time.Duration {
+	defaultTMaxMs := p.DefaultTMax
+	if defaultTMaxMs <= 0 {
+		defaultTMaxMs = 500
+	}
+	if req != nil && req.TMax > 0 {
+		return time.Duration(int(req.TMax)) * time.Millisecond
+	}
+	return time.Duration(defaultTMaxMs) * time.Millisecond
+}
+
+func primaryImp(req *openrtb.BidRequest) *openrtb.Imp {
+	if req == nil || len(req.Imp) == 0 {
+		return nil
+	}
+	return &req.Imp[0]
+}
+
+func requestFloor(req *openrtb.BidRequest) float64 {
+	if imp := primaryImp(req); imp != nil {
+		return imp.BidFloor
+	}
+	return 0
+}
+
+func requestTagID(req *openrtb.BidRequest) string {
+	if imp := primaryImp(req); imp != nil {
+		return imp.TagID
+	}
+	return ""
+}
+
+func bundleForRequest(req *openrtb.BidRequest) string {
+	if req == nil || req.App == nil {
+		return ""
+	}
+	return openrtb.CleanBundleValue(req.App.Bundle, req.App.ID, req.App.StoreURL)
+}
+
+func formatPipelineNoBidDetail(reason string, decision floor.Decision, latency time.Duration) string {
+	parts := []string{strings.TrimSpace(reason)}
+	parts = append(parts, fmt.Sprintf("base_floor=%.2f", decision.BaseFloor))
+	parts = append(parts, fmt.Sprintf("applied_floor=%.2f", decision.AppliedFloor))
+	if decision.AdaptiveFloor > 0 {
+		parts = append(parts, fmt.Sprintf("adaptive_floor=%.2f", decision.AdaptiveFloor))
+	}
+	if decision.MatchedRuleID != "" {
+		parts = append(parts, fmt.Sprintf("floor_rule=%s", decision.MatchedRuleID))
+	}
+	if decision.Mode != "" {
+		parts = append(parts, fmt.Sprintf("floor_mode=%s", decision.Mode))
+	}
+	parts = append(parts, fmt.Sprintf("latency_ms=%d", latency.Milliseconds()))
+	return strings.Join(parts, " ")
 }
 
 func (p *Pipeline) FinalizeDelivery(result *Result) {

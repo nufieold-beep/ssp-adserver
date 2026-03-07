@@ -40,6 +40,16 @@ type Engine struct {
 	avgPrice float64 // Rolling average win price for adaptive floors
 }
 
+type Decision struct {
+	BaseFloor       float64
+	RuleFloor       float64
+	AdaptiveFloor   float64
+	AppliedFloor    float64
+	MatchedRuleID   string
+	MatchedRuleName string
+	Mode            string
+}
+
 func NewEngine() *Engine {
 	return &Engine{rules: make([]*Rule, 0)}
 }
@@ -81,14 +91,41 @@ func (e *Engine) UpdateAvgPrice(avg float64) {
 	e.mu.Unlock()
 }
 
+// ObserveWinPrice incrementally updates the adaptive floor input using an
+// exponential moving average so floor optimization reacts without oscillating.
+func (e *Engine) ObserveWinPrice(price float64) {
+	if price <= 0 {
+		return
+	}
+	e.mu.Lock()
+	if e.avgPrice <= 0 {
+		e.avgPrice = price
+	} else {
+		e.avgPrice = (e.avgPrice * 0.8) + (price * 0.2)
+	}
+	e.mu.Unlock()
+}
+
 // Calculate returns the effective floor price for a request.
 // Evaluation order:
 //  1. Walk rules in priority order; use the first match
 //  2. If no rule matches, use adaptive floor (70% of avg win price)
 //  3. Return 0 if no rule matches and no avg price data
 func (e *Engine) Calculate(req *openrtb.BidRequest) float64 {
+	return e.CalculateDecision(req).AppliedFloor
+}
+
+// CalculateDecision returns the selected floor together with reporting context
+// describing whether the request floor, matched rule, or adaptive model won.
+func (e *Engine) CalculateDecision(req *openrtb.BidRequest) Decision {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
+	decision := Decision{Mode: "none"}
+	if req != nil && len(req.Imp) > 0 && req.Imp[0].BidFloor > 0 {
+		decision.BaseFloor = req.Imp[0].BidFloor
+		decision.AppliedFloor = req.Imp[0].BidFloor
+		decision.Mode = "request"
+	}
 	ctx := buildRuleMatchCtx(req)
 	hourUTC := time.Now().UTC().Hour()
 
@@ -97,15 +134,31 @@ func (e *Engine) Calculate(req *openrtb.BidRequest) float64 {
 			continue
 		}
 		if matchesRule(r, ctx, hourUTC) {
-			return r.FloorCPM
+			decision.RuleFloor = r.FloorCPM
+			decision.MatchedRuleID = r.ID
+			decision.MatchedRuleName = strings.TrimSpace(r.Name)
+			break
 		}
 	}
 
 	// Adaptive floor: 70% of rolling average.
 	if e.avgPrice > 0 {
-		return e.avgPrice * 0.7
+		decision.AdaptiveFloor = e.avgPrice * 0.7
 	}
-	return 0
+
+	selected := decision.BaseFloor
+	if decision.RuleFloor > selected {
+		selected = decision.RuleFloor
+		decision.Mode = "rule"
+	} else if decision.AdaptiveFloor > selected && decision.RuleFloor <= 0 {
+		selected = decision.AdaptiveFloor
+		decision.Mode = "adaptive"
+	}
+	decision.AppliedFloor = selected
+	if decision.AppliedFloor <= 0 {
+		decision.Mode = "none"
+	}
+	return decision
 }
 
 type ruleMatchCtx struct {

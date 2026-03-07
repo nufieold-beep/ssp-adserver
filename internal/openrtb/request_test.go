@@ -130,6 +130,31 @@ func TestBuildFromHTTPPrefersQueryParamsOverHeaders(t *testing.T) {
 	}
 }
 
+func TestBuildFromHTTPAddsSourceTransactionID(t *testing.T) {
+	app := fiber.New()
+	var got BidRequest
+
+	app.Get("/", func(c *fiber.Ctx) error {
+		got = BuildFromHTTP(c)
+		return c.SendStatus(http.StatusNoContent)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/?app_bundle=com.example.ctv", nil)
+	if _, err := app.Test(req); err != nil {
+		t.Fatalf("unexpected fiber test error: %v", err)
+	}
+
+	if got.Source == nil {
+		t.Fatal("expected source to be populated")
+	}
+	if got.Source.TID != got.ID {
+		t.Fatalf("expected source tid to match request id, got tid=%q req=%q", got.Source.TID, got.ID)
+	}
+	if got.Source.SChain == nil || len(got.Source.SChain.Nodes) == 0 {
+		t.Fatalf("expected source schain nodes to be present, got %#v", got.Source)
+	}
+}
+
 func TestDecodeStoreURLValueDecodesEncodedURL(t *testing.T) {
 	got := DecodeStoreURLValue("https%253A%252F%252Fapps.apple.com%252Fus%252Fapp%252Fexample-tv%252Fid1089249069")
 	if got != "https://apps.apple.com/us/app/example-tv/id1089249069" {

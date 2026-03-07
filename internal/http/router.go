@@ -1472,8 +1472,8 @@ func NewRouterWithDeps(cfg *config.Config, metrics *monitor.Metrics, configPath 
 	app.Get("/metrics", func(c *fiber.Ctx) error {
 		o := metrics.GetOverview()
 		return c.Type("text").SendString(fmt.Sprintf(
-			"# SSP Metrics\nssp_ad_requests_total %d\nssp_impressions_total %d\nssp_completions_total %d\nssp_spend_total %.2f\nssp_errors_total %d\nssp_adapter_errors_total %d\nssp_no_bids_total %d\nssp_wins_total %d\nssp_losses_total %d\nssp_vast_starts_total %d\nssp_vast_errors_total %d\nssp_avg_bid_latency_ms %.1f\n",
-			o.AdRequests, o.Impressions, o.Completions, o.TotalSpend, o.Errors, o.AdapterErrors, o.NoBids,
+			"# SSP Metrics\nssp_ad_requests_total %d\nssp_impressions_total %d\nssp_viewable_impressions_total %d\nssp_completions_total %d\nssp_spend_total %.2f\nssp_errors_total %d\nssp_adapter_errors_total %d\nssp_no_bids_total %d\nssp_wins_total %d\nssp_losses_total %d\nssp_vast_starts_total %d\nssp_vast_errors_total %d\nssp_avg_bid_latency_ms %.1f\n",
+			o.AdRequests, o.Impressions, o.ViewableImpressions, o.Completions, o.TotalSpend, o.Errors, o.AdapterErrors, o.NoBids,
 			o.BidWins, o.BidLosses, o.VastStarts, o.VastErrors, o.AvgBidLatency,
 		))
 	})
@@ -1497,6 +1497,7 @@ func registerEventRoutes(app *fiber.App, s *store, metrics *monitor.Metrics) {
 
 	events := []vastEvent{
 		{"/impression", "vast_impression", metrics.RecordImpression, "cmp=%s crid=%s price=%s"},
+		{"/viewable", "vast_viewable", metrics.RecordViewableImpression, "cmp=%s crid=%s price=%s"},
 		{"/start", "vast_start", metrics.RecordVastStart, ""},
 		{"/firstQuartile", "vast_q1", metrics.RecordVastQ1, ""},
 		{"/midpoint", "vast_mid", metrics.RecordVastMid, ""},
@@ -2877,7 +2878,7 @@ func handlePipelineServeResult(c *fiber.Ctx, p *pipeline.Pipeline, metrics *moni
 
 	if result.NoBid || result.Winner == nil || strings.TrimSpace(result.VAST) == "" {
 		s.recordMetricsExportRequestOutcome(req, auditSupplyID, 0, auditBundle, 0, 0, 0)
-		return c.Type("xml").SendString(vast.BuildNoAd())
+		return c.Type("xml").SendString(vast.BuildNoAdForRequest(req))
 	}
 
 	campaignID, campaignName, deliveryStatus, allowed := s.reserveCampaignDelivery(req, result.Winner, result.WinPrice)
@@ -2894,7 +2895,7 @@ func handlePipelineServeResult(c *fiber.Ctx, p *pipeline.Pipeline, metrics *moni
 			ADomain:   winnerPrimaryDomain(result.Winner),
 		})
 		s.recordMetricsExportRequestOutcome(req, auditSupplyID, 0, auditBundle, 0, 0, 0)
-		return c.Type("xml").SendString(vast.BuildNoAd())
+		return c.Type("xml").SendString(vast.BuildNoAdForRequest(req))
 	}
 
 	demandEndpointID := 0

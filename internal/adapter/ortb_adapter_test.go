@@ -199,6 +199,96 @@ func TestORTBAdapterPreservesPublisherAppFieldsInOutboundRequest(t *testing.T) {
 	}
 }
 
+func TestORTBAdapterPreservesTransactionIDWhileRemovingOnlyConfiguredSupplyChainFields(t *testing.T) {
+	var gotPayload map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotPayload)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	request := &openrtb.BidRequest{
+		ID:  "req-schain",
+		Imp: []openrtb.Imp{{ID: "imp-1"}},
+		Source: &openrtb.Source{
+			TID:    "req-schain",
+			PChain: "1!exchange.example,1!ssp.example",
+			SChain: &openrtb.SChain{Complete: 1, Ver: "1.0", Nodes: []openrtb.SChainNode{{ASI: "viadsmedia.com", SID: "pub-001"}}},
+		},
+	}
+
+	adapter := NewORTBAdapter(&AdapterConfig{
+		ID:           "ortb-schain",
+		Name:         "ORTB Supply Chain",
+		Type:         TypeORTB,
+		Endpoint:     server.URL,
+		ORTBVersion:  "2.6",
+		Status:       1,
+		RemovePChain: true,
+	})
+
+	result, err := adapter.RequestBids(context.Background(), request)
+	if err != nil {
+		t.Fatalf("unexpected adapter error: %v", err)
+	}
+	if result == nil || !result.NoBid {
+		t.Fatalf("expected no-bid result from 204 response, got %#v", result)
+	}
+
+	source, ok := gotPayload["source"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected source object in outbound payload, got %#v", gotPayload["source"])
+	}
+	if got := source["tid"]; got != "req-schain" {
+		t.Fatalf("expected outbound source.tid to be preserved, got %#v", got)
+	}
+	if _, ok := source["schain"]; ok {
+		t.Fatalf("expected schain to be removed when endpoint schain is disabled, got %#v", source["schain"])
+	}
+	if _, ok := source["pchain"]; ok {
+		t.Fatalf("expected pchain to be removed when remove_pchain is enabled, got %#v", source["pchain"])
+	}
+	if request.Source == nil || request.Source.SChain == nil {
+		t.Fatalf("expected original request source.schain to remain intact, got %#v", request.Source)
+	}
+}
+
+func TestORTBAdapterClampsOutboundTMaxToClientBudget(t *testing.T) {
+	var gotPayload map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotPayload)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	request := &openrtb.BidRequest{ID: "req-tmax", TMax: 500, Imp: []openrtb.Imp{{ID: "imp-1"}}}
+	adapter := NewORTBAdapter(&AdapterConfig{
+		ID:        "ortb-timeout",
+		Name:      "ORTB Timeout",
+		Type:      TypeORTB,
+		Endpoint:  server.URL,
+		Status:    1,
+		TimeoutMs: 120,
+	})
+
+	result, err := adapter.RequestBids(context.Background(), request)
+	if err != nil {
+		t.Fatalf("unexpected adapter error: %v", err)
+	}
+	if result == nil || !result.NoBid {
+		t.Fatalf("expected no-bid result from 204 response, got %#v", result)
+	}
+	if got, ok := gotPayload["tmax"].(float64); !ok || int(got) != 70 {
+		t.Fatalf("expected outbound tmax to be clamped to 70ms, got %#v", gotPayload["tmax"])
+	}
+}
+
 func TestORTBAdapterPreservesPublisherBundleWhenInputBundleLooksEncoded(t *testing.T) {
 	var (
 		gotPayload map[string]interface{}

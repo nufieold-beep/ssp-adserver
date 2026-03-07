@@ -28,6 +28,12 @@ const (
 	AdmPassthrough         // Complete VAST XML → inject our tracking pixels
 )
 
+type documentProfile struct {
+	version             string
+	supportsMeasurement bool
+	supportsFallback    bool
+}
+
 // mediaExtensions maps file extensions to their video MIME types.
 var mediaExtensions = map[string]string{
 	".mp4":  "video/mp4",
@@ -85,6 +91,80 @@ func DetectAdmType(adm string) AdmType {
 	return AdmInvalid
 }
 
+func buildDocumentProfile(req *openrtb.BidRequest, bid *openrtb.Bid) documentProfile {
+	version := requestedVASTVersion(req)
+	if bid != nil && DetectAdmType(bid.Adm) == AdmPassthrough {
+		if detected := detectVASTVersion(bid.Adm); detected != "" {
+			version = detected
+		}
+	}
+	return documentProfile{
+		version:             version,
+		supportsMeasurement: vastVersionRank(version) >= vastVersionRank("4.0"),
+		supportsFallback:    vastVersionRank(version) >= vastVersionRank("3.0"),
+	}
+}
+
+func requestedVASTVersion(req *openrtb.BidRequest) string {
+	if req == nil || len(req.Imp) == 0 || req.Imp[0].Video == nil {
+		return "3.0"
+	}
+	version := "3.0"
+	for _, protocol := range req.Imp[0].Video.Protocols {
+		switch int(protocol) {
+		case 7, 8:
+			return "4.1"
+		case 2:
+			version = "2.0"
+		case 3:
+			version = "3.0"
+		}
+	}
+	return version
+}
+
+func detectVASTVersion(adm string) string {
+	lower := strings.ToLower(adm)
+	idx := strings.Index(lower, "version=")
+	if idx < 0 {
+		return ""
+	}
+	value := lower[idx+len("version="):]
+	if len(value) == 0 {
+		return ""
+	}
+	quote := value[0]
+	if quote != '\'' && quote != '"' {
+		return ""
+	}
+	value = value[1:]
+	end := strings.IndexByte(value, quote)
+	if end < 0 {
+		return ""
+	}
+	switch version := strings.TrimSpace(value[:end]); version {
+	case "2.0", "3.0", "4.0", "4.1", "4.2":
+		return version
+	default:
+		return ""
+	}
+}
+
+func vastVersionRank(version string) int {
+	switch strings.TrimSpace(version) {
+	case "2.0":
+		return 20
+	case "4.2":
+		return 42
+	case "4.1":
+		return 41
+	case "4.0":
+		return 40
+	default:
+		return 30
+	}
+}
+
 // Build creates a VAST 3.0 XML response from a winning bid.
 // baseURL is the publicly-reachable origin (e.g. "https://ads1.viadsmedia.com").
 // req provides the full request context for enriched tracking pixels.
@@ -98,13 +178,14 @@ func Build(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) string {
 	if baseURL == "" {
 		baseURL = BaseURL
 	}
+	profile := buildDocumentProfile(req, bid)
 	switch DetectAdmType(bid.Adm) {
 	case AdmPassthrough:
-		return buildPassthrough(bid, req, baseURL)
+		return buildPassthrough(profile, bid, req, baseURL)
 	case AdmWrapper:
-		return buildWrapper(bid, req, baseURL)
+		return buildWrapper(profile, bid, req, baseURL)
 	case AdmInline:
-		return buildInline(bid, req, baseURL)
+		return buildInline(profile, bid, req, baseURL)
 	default:
 		return ""
 	}
@@ -147,6 +228,12 @@ func writeImpressionTag(sb *strings.Builder, pixelURL string) {
 	sb.WriteString("]]></Impression>\n")
 }
 
+func writeErrorTag(sb *strings.Builder, errorURL string) {
+	sb.WriteString("   <Error><![CDATA[")
+	sb.WriteString(errorURL)
+	sb.WriteString("]]></Error>\n")
+}
+
 // Pre-allocated tracking event definitions — shared across all requests.
 var trackingEvents = [...]struct{ name, path string }{
 	{"creativeView", "/start"},
@@ -185,6 +272,21 @@ func trackingEventsBlock(evtBase string, bid *openrtb.Bid) string {
 func impressionBlock(evtBase string, bid *openrtb.Bid, req *openrtb.BidRequest) string {
 	var sb strings.Builder
 	sb.Grow(512)
+	writeImpressionTag(&sb, evtBase+"/impression?"+baseEventParams(evtBase, bid, req).Encode())
+	return sb.String()
+}
+
+func errorBlock(evtBase string, bid *openrtb.Bid, req *openrtb.BidRequest) string {
+	var sb strings.Builder
+	writeErrorTag(&sb, evtBase+"/error?"+baseEventParams(evtBase, bid, req).Encode()+"&code=[ERRORCODE]")
+	return sb.String()
+}
+
+func viewableImpressionBlock(evtBase string, bid *openrtb.Bid, req *openrtb.BidRequest) string {
+	return "   <ViewableImpression><Viewable><![CDATA[" + evtBase + "/viewable?" + baseEventParams(evtBase, bid, req).Encode() + "]]></Viewable></ViewableImpression>\n"
+}
+
+func baseEventParams(evtBase string, bid *openrtb.Bid, req *openrtb.BidRequest) url.Values {
 
 	if req == nil {
 		req = &openrtb.BidRequest{}
@@ -228,9 +330,7 @@ func impressionBlock(evtBase string, bid *openrtb.Bid, req *openrtb.BidRequest) 
 			return price
 		}(), 'f', -1, 64)},
 	}
-	writeImpressionTag(&sb, evtBase+"/impression?"+params.Encode())
-
-	return sb.String()
+	return params
 }
 
 func metricCountryCode(country string) string {
@@ -273,9 +373,10 @@ func bidDimensions(bid *openrtb.Bid) (int, int) {
 }
 
 // buildInline creates a self-contained VAST InLine ad from a media file URL.
-func buildInline(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) string {
+func buildInline(profile documentProfile, bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) string {
 	evtBase := baseURL + "/api/v1/event"
 	impressions := impressionBlock(evtBase, bid, req)
+	errors := errorBlock(evtBase, bid, req)
 	tracking := trackingEventsBlock(evtBase, bid)
 
 	w, h := bidDimensions(bid)
@@ -284,9 +385,11 @@ func buildInline(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) stri
 	admURL := resolveAdm(bid)
 
 	var sb strings.Builder
-	sb.Grow(2048)
+	sb.Grow(2300)
 	sb.WriteString(`<?xml version="1.0" encoding="UTF-8"?>
-<VAST version="3.0">
+<VAST version="`)
+	sb.WriteString(profile.version)
+	sb.WriteString(`">
  <Ad id="`)
 	sb.WriteString(bidID)
 	sb.WriteString(`">
@@ -295,13 +398,24 @@ func buildInline(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) stri
    <AdTitle>Ad `)
 	sb.WriteString(bidID)
 	sb.WriteString("</AdTitle>\n")
+	sb.WriteString(errors)
 	sb.WriteString(impressions)
+	if profile.supportsMeasurement {
+		sb.WriteString(viewableImpressionBlock(evtBase, bid, req))
+	}
 	sb.WriteString(`   <Creatives>
     <Creative id="`)
 	sb.WriteString(crID)
 	sb.WriteString(`">
      <Linear>
-      <Duration>00:00:30</Duration>
+`)
+	if profile.supportsMeasurement && crID != "" {
+		sb.WriteString(`      <UniversalAdID idRegistry="ssp-creative"><![CDATA[`)
+		sb.WriteString(crID)
+		sb.WriteString(`]]></UniversalAdID>
+`)
+	}
+	sb.WriteString(`      <Duration>00:00:30</Duration>
 `)
 	sb.WriteString(tracking)
 	sb.WriteString(`      <MediaFiles>
@@ -325,23 +439,34 @@ func buildInline(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) stri
 }
 
 // buildWrapper creates a VAST Wrapper that redirects to the DSP's VAST tag URL.
-func buildWrapper(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) string {
+func buildWrapper(profile documentProfile, bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) string {
 	evtBase := baseURL + "/api/v1/event"
 	impressions := impressionBlock(evtBase, bid, req)
+	errors := errorBlock(evtBase, bid, req)
 	tracking := trackingEventsBlock(evtBase, bid)
 	bidID := html.EscapeString(bid.ID)
 	admURL := resolveAdm(bid)
+	wrapperAttrs := ""
+	if profile.supportsFallback {
+		wrapperAttrs = ` fallbackOnNoAd="true" followAdditionalWrappers="true"`
+	}
 
 	var sb strings.Builder
-	sb.Grow(1536)
+	sb.Grow(1700)
 	sb.WriteString(`<?xml version="1.0" encoding="UTF-8"?>
-<VAST version="3.0">
+<VAST version="`)
+	sb.WriteString(profile.version)
+	sb.WriteString(`">
  <Ad id="`)
 	sb.WriteString(bidID)
 	sb.WriteString(`">
-  <Wrapper>
+  <Wrapper`)
+	sb.WriteString(wrapperAttrs)
+	sb.WriteString(`>
    <AdSystem>viadsmedia SSP</AdSystem>
-   <VASTAdTagURI><![CDATA[`)
+`)
+	sb.WriteString(errors)
+	sb.WriteString(`   <VASTAdTagURI><![CDATA[`)
 	sb.WriteString(admURL)
 	sb.WriteString("]]></VASTAdTagURI>\n")
 	sb.WriteString(impressions)
@@ -362,11 +487,14 @@ func buildWrapper(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) str
 // buildPassthrough takes a complete VAST XML document from the DSP and
 // injects SSP impression pixels only. The DSP's own TrackingEvents and
 // creative structure are preserved untouched.
-func buildPassthrough(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) string {
+func buildPassthrough(profile documentProfile, bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) string {
 	xml := bid.SubstituteMacrosRaw(strings.TrimSpace(bid.Adm))
 
 	evtBase := baseURL + "/api/v1/event"
-	impressions := impressionBlock(evtBase, bid, req)
+	fragments := impressionBlock(evtBase, bid, req) + errorBlock(evtBase, bid, req)
+	if profile.supportsMeasurement {
+		fragments += viewableImpressionBlock(evtBase, bid, req)
+	}
 
 	// Inject impression pixels after the first <Impression> block or after <InLine>/<Wrapper>
 	injected := false
@@ -374,7 +502,7 @@ func buildPassthrough(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string)
 		idx := strings.Index(xml, anchor)
 		if idx >= 0 {
 			insertAt := idx + len(anchor)
-			xml = xml[:insertAt] + "\n" + impressions + xml[insertAt:]
+			xml = xml[:insertAt] + "\n" + fragments + xml[insertAt:]
 			injected = true
 			break
 		}
@@ -385,7 +513,7 @@ func buildPassthrough(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string)
 			adEnd := strings.Index(xml[adIdx:], ">")
 			if adEnd >= 0 {
 				pos := adIdx + adEnd + 1
-				xml = xml[:pos] + "\n" + impressions + xml[pos:]
+				xml = xml[:pos] + "\n" + fragments + xml[pos:]
 			}
 		}
 	}
@@ -395,6 +523,10 @@ func buildPassthrough(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string)
 
 // BuildNoAd returns an empty VAST response (no ad available).
 func BuildNoAd() string {
+	return BuildNoAdForRequest(nil)
+}
+
+func BuildNoAdForRequest(req *openrtb.BidRequest) string {
 	return `<?xml version="1.0" encoding="UTF-8"?>
-<VAST version="3.0"/>`
+<VAST version="` + requestedVASTVersion(req) + `"/>`
 }

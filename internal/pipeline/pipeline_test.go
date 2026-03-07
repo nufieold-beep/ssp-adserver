@@ -305,6 +305,50 @@ func TestExecuteIncludesNoBidAdapterDetails(t *testing.T) {
 	}
 }
 
+func TestExecuteRecordsFloorDecisionDetails(t *testing.T) {
+	reg := adapter.NewRegistry()
+	reg.Register(&noBidAdapter{id: "no-bid-adapter"}, &adapter.AdapterConfig{ID: "no-bid-adapter", Name: "No Bid Adapter", Type: adapter.TypeORTB, Endpoint: "http://unused", Status: 1})
+
+	engine := floor.NewEngine()
+	engine.AddRule(&floor.Rule{ID: "us-ctv", Name: "US CTV", Priority: 1, FloorCPM: 3.0, Geos: []string{"USA"}, DeviceTypes: []int{3}, Status: 1})
+	metrics := monitor.New()
+	p := &pipeline.Pipeline{
+		Registry:    reg,
+		FloorEngine: engine,
+		AQScanner:   adquality.NewScanner(),
+		Metrics:     metrics,
+		AuctionType: "first_price",
+		DefaultTMax: 100,
+	}
+
+	req := &openrtb.BidRequest{
+		ID:  "req-floor",
+		Imp: []openrtb.Imp{{ID: "imp-1", BidFloor: 1.0, TagID: "tag-1", Video: &openrtb.Video{}}},
+		App: &openrtb.App{Bundle: "bundle-1"},
+		Device: &openrtb.Device{
+			DeviceType: 3,
+			Geo:        &openrtb.Geo{Country: "USA"},
+		},
+	}
+
+	result := p.Execute(context.Background(), req, "https://ads.example.com")
+	if !result.NoBid {
+		t.Fatal("expected no bid result when the adapter explicitly no-bids")
+	}
+	if got := req.Imp[0].BidFloor; got != 3.0 {
+		t.Fatalf("expected applied floor to be updated to 3.0, got %.2f", got)
+	}
+
+	events := metrics.GetTrafficEvents("floor_decision")
+	if len(events) == 0 {
+		t.Fatal("expected floor decision event to be recorded")
+	}
+	details := events[len(events)-1].Details
+	if !strings.Contains(details, "mode=rule") || !strings.Contains(details, "rule=us-ctv") {
+		t.Fatalf("expected floor decision details to include matched rule, got %q", details)
+	}
+}
+
 func TestExecuteUsesCleanBundleInTrafficEvents(t *testing.T) {
 	reg := adapter.NewRegistry()
 	reg.Register(&noBidAdapter{id: "no-bid-adapter"}, &adapter.AdapterConfig{ID: "no-bid-adapter", Name: "No Bid Adapter", Type: adapter.TypeORTB, Endpoint: "http://unused", Status: 1})

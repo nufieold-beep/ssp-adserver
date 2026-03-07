@@ -17,17 +17,18 @@ type Metrics struct {
 	NoBidReasons        sync.Map // map[string]*atomic.Int64
 
 	// Global counters
-	AdRequests      atomic.Int64
-	AdOpps          atomic.Int64
-	Impressions     atomic.Int64
-	Completions     atomic.Int64
-	Clicks          atomic.Int64
-	NoBids          atomic.Int64
-	Errors          atomic.Int64
-	AdapterErrors   atomic.Int64
-	RevenueMu       sync.Mutex
-	TotalSpend      float64
-	TotalGrossSpend float64
+	AdRequests          atomic.Int64
+	AdOpps              atomic.Int64
+	Impressions         atomic.Int64
+	ViewableImpressions atomic.Int64
+	Completions         atomic.Int64
+	Clicks              atomic.Int64
+	NoBids              atomic.Int64
+	Errors              atomic.Int64
+	AdapterErrors       atomic.Int64
+	RevenueMu           sync.Mutex
+	TotalSpend          float64
+	TotalGrossSpend     float64
 
 	// VAST event counters
 	VastStarts atomic.Int64
@@ -141,6 +142,10 @@ func (m *Metrics) RecordImpression() {
 	m.recordHourlyMetric(func(bucket *HourlyMetricBucket) {
 		bucket.Impressions++
 	})
+}
+
+func (m *Metrics) RecordViewableImpression() {
+	m.ViewableImpressions.Add(1)
 }
 
 func (m *Metrics) RecordCompletion() {
@@ -452,22 +457,23 @@ func (m *Metrics) GetCampaignMetric(campaignID int) *CampaignMetric {
 
 // Overview returns a snapshot of global metrics for the dashboard.
 type Overview struct {
-	AdRequests      int64   `json:"ad_requests"`
-	AdOpps          int64   `json:"ad_opportunities"`
-	Impressions     int64   `json:"impressions"`
-	Completions     int64   `json:"completions"`
-	Clicks          int64   `json:"clicks"`
-	NoBids          int64   `json:"no_bids"`
-	Errors          int64   `json:"errors"`
-	AdapterErrors   int64   `json:"adapter_errors"`
-	TotalSpend      float64 `json:"total_spend"`
-	TotalGrossSpend float64 `json:"total_gross_spend"`
-	Uptime          string  `json:"uptime"`
-	AvgBidLatency   float64 `json:"avg_bid_latency_ms"`
-	BidWins         int64   `json:"bid_wins"`
-	BidLosses       int64   `json:"bid_losses"`
-	VastStarts      int64   `json:"vast_starts"`
-	VastErrors      int64   `json:"vast_errors"`
+	AdRequests          int64   `json:"ad_requests"`
+	AdOpps              int64   `json:"ad_opportunities"`
+	Impressions         int64   `json:"impressions"`
+	ViewableImpressions int64   `json:"viewable_impressions"`
+	Completions         int64   `json:"completions"`
+	Clicks              int64   `json:"clicks"`
+	NoBids              int64   `json:"no_bids"`
+	Errors              int64   `json:"errors"`
+	AdapterErrors       int64   `json:"adapter_errors"`
+	TotalSpend          float64 `json:"total_spend"`
+	TotalGrossSpend     float64 `json:"total_gross_spend"`
+	Uptime              string  `json:"uptime"`
+	AvgBidLatency       float64 `json:"avg_bid_latency_ms"`
+	BidWins             int64   `json:"bid_wins"`
+	BidLosses           int64   `json:"bid_losses"`
+	VastStarts          int64   `json:"vast_starts"`
+	VastErrors          int64   `json:"vast_errors"`
 }
 
 func (m *Metrics) GetOverview() Overview {
@@ -477,43 +483,47 @@ func (m *Metrics) GetOverview() Overview {
 	m.RevenueMu.Unlock()
 
 	return Overview{
-		AdRequests:      m.AdRequests.Load(),
-		AdOpps:          m.AdOpps.Load(),
-		Impressions:     m.Impressions.Load(),
-		Completions:     m.Completions.Load(),
-		Clicks:          m.Clicks.Load(),
-		NoBids:          m.NoBids.Load(),
-		Errors:          m.Errors.Load(),
-		AdapterErrors:   m.AdapterErrors.Load(),
-		TotalSpend:      spend,
-		TotalGrossSpend: grossSpend,
-		Uptime:          time.Since(m.StartTime).Round(time.Second).String(),
-		AvgBidLatency:   m.AvgBidLatency(),
-		BidWins:         m.BidWins.Load(),
-		BidLosses:       m.BidLosses.Load(),
-		VastStarts:      m.VastStarts.Load(),
-		VastErrors:      m.VastErrors.Load(),
+		AdRequests:          m.AdRequests.Load(),
+		AdOpps:              m.AdOpps.Load(),
+		Impressions:         m.Impressions.Load(),
+		ViewableImpressions: m.ViewableImpressions.Load(),
+		Completions:         m.Completions.Load(),
+		Clicks:              m.Clicks.Load(),
+		NoBids:              m.NoBids.Load(),
+		Errors:              m.Errors.Load(),
+		AdapterErrors:       m.AdapterErrors.Load(),
+		TotalSpend:          spend,
+		TotalGrossSpend:     grossSpend,
+		Uptime:              time.Since(m.StartTime).Round(time.Second).String(),
+		AvgBidLatency:       m.AvgBidLatency(),
+		BidWins:             m.BidWins.Load(),
+		BidLosses:           m.BidLosses.Load(),
+		VastStarts:          m.VastStarts.Load(),
+		VastErrors:          m.VastErrors.Load(),
 	}
 }
 
 // DeliveryHealth returns VAST delivery health metrics.
 type DeliveryHealth struct {
-	Impressions int64   `json:"impressions"`
-	Starts      int64   `json:"starts"`
-	Q1          int64   `json:"q1"`
-	Mid         int64   `json:"mid"`
-	Q3          int64   `json:"q3"`
-	Completions int64   `json:"completions"`
-	Skips       int64   `json:"skips"`
-	Errors      int64   `json:"errors"`
-	StartRate   float64 `json:"start_rate"`
-	VTR         float64 `json:"vtr"`
-	SkipRate    float64 `json:"skip_rate"`
-	ErrorRate   float64 `json:"error_rate"`
+	Impressions     int64   `json:"impressions"`
+	Viewables       int64   `json:"viewables"`
+	Starts          int64   `json:"starts"`
+	Q1              int64   `json:"q1"`
+	Mid             int64   `json:"mid"`
+	Q3              int64   `json:"q3"`
+	Completions     int64   `json:"completions"`
+	Skips           int64   `json:"skips"`
+	Errors          int64   `json:"errors"`
+	StartRate       float64 `json:"start_rate"`
+	VTR             float64 `json:"vtr"`
+	SkipRate        float64 `json:"skip_rate"`
+	ErrorRate       float64 `json:"error_rate"`
+	ViewabilityRate float64 `json:"viewability_rate"`
 }
 
 func (m *Metrics) GetDeliveryHealth() DeliveryHealth {
 	imps := m.Impressions.Load()
+	viewables := m.ViewableImpressions.Load()
 	starts := m.VastStarts.Load()
 	completions := m.Completions.Load()
 	skips := m.VastSkips.Load()
@@ -521,6 +531,7 @@ func (m *Metrics) GetDeliveryHealth() DeliveryHealth {
 
 	h := DeliveryHealth{
 		Impressions: imps,
+		Viewables:   viewables,
 		Starts:      starts,
 		Q1:          m.VastQ1.Load(),
 		Mid:         m.VastMid.Load(),
@@ -533,8 +544,12 @@ func (m *Metrics) GetDeliveryHealth() DeliveryHealth {
 		// Cap start rate at 100% for dashboard readability when event streams
 		// are partially sampled or arrive out of order.
 		h.StartRate = float64(starts) / float64(imps) * 100
+		h.ViewabilityRate = float64(viewables) / float64(imps) * 100
 		if h.StartRate > 100 {
 			h.StartRate = 100
+		}
+		if h.ViewabilityRate > 100 {
+			h.ViewabilityRate = 100
 		}
 	}
 	if starts > 0 {

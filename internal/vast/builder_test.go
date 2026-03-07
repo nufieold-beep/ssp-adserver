@@ -57,3 +57,43 @@ func TestImpressionBlockSuppressesJunkBundleWithoutFallback(t *testing.T) {
 		t.Fatalf("expected junk bundle to be suppressed from tracking URL, got %q", got)
 	}
 }
+
+func TestBuildWrapperUsesRequestedVAST41WithFallbackAndErrorHandling(t *testing.T) {
+	bid := &openrtb.Bid{ID: "bid-1", Adm: "https://dsp.example.com/wrapper", Price: 3.5}
+	req := &openrtb.BidRequest{Imp: []openrtb.Imp{{Video: &openrtb.Video{Protocols: []adcom1.MediaCreativeSubtype{7, 8}}}}}
+
+	xml := Build(bid, req, "https://ads.example.com")
+	if !strings.Contains(xml, `<VAST version="4.1">`) {
+		t.Fatalf("expected VAST 4.1 wrapper, got %q", xml)
+	}
+	if !strings.Contains(xml, `<Wrapper fallbackOnNoAd="true" followAdditionalWrappers="true">`) {
+		t.Fatalf("expected wrapper fallback attributes, got %q", xml)
+	}
+	if !strings.Contains(xml, `/api/v1/event/error?`) {
+		t.Fatalf("expected wrapper error tracking, got %q", xml)
+	}
+}
+
+func TestBuildInlineAddsViewableMeasurementForVAST41(t *testing.T) {
+	bid := &openrtb.Bid{ID: "bid-2", CrID: "cr-2", Adm: "https://cdn.example.com/video.mp4", Price: 3.5}
+	req := &openrtb.BidRequest{Imp: []openrtb.Imp{{Video: &openrtb.Video{Protocols: []adcom1.MediaCreativeSubtype{7}}}}}
+
+	xml := Build(bid, req, "https://ads.example.com")
+	if !strings.Contains(xml, `<ViewableImpression><Viewable><![CDATA[https://ads.example.com/api/v1/event/viewable?`) {
+		t.Fatalf("expected viewable impression tracking, got %q", xml)
+	}
+	if !strings.Contains(xml, `<UniversalAdID idRegistry="ssp-creative"><![CDATA[cr-2]]></UniversalAdID>`) {
+		t.Fatalf("expected UniversalAdID for modern VAST, got %q", xml)
+	}
+	if !strings.Contains(xml, `/api/v1/event/error?`) {
+		t.Fatalf("expected inline error tracking, got %q", xml)
+	}
+}
+
+func TestBuildNoAdForRequestUsesRequestedVASTVersion(t *testing.T) {
+	req := &openrtb.BidRequest{Imp: []openrtb.Imp{{Video: &openrtb.Video{Protocols: []adcom1.MediaCreativeSubtype{2}}}}}
+	xml := BuildNoAdForRequest(req)
+	if !strings.Contains(xml, `<VAST version="2.0"/>`) {
+		t.Fatalf("expected VAST 2.0 no-ad response, got %q", xml)
+	}
+}

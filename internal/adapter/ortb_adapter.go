@@ -168,6 +168,7 @@ func (a *ORTBAdapter) applyEndpointConfig(req *openrtb.BidRequest) *openrtb.BidR
 			}
 		}
 	}
+	clonedReq.TMax = normalizeOutboundTMax(clonedReq.TMax, a.client.Timeout)
 
 	// Merge BAdv: combine request-level + endpoint-level blocked advertisers
 	if len(req.BAdv) > 0 || len(a.badv) > 0 {
@@ -179,10 +180,7 @@ func (a *ORTBAdapter) applyEndpointConfig(req *openrtb.BidRequest) *openrtb.BidR
 		clonedReq.BCat = mergeSanitizedLists(req.BCat, a.bcat)
 	}
 
-	// Supply chain: remove ext.schain if not enabled for this endpoint
-	if (!a.schainEnabled || a.removePChain) && clonedReq.Source != nil && clonedReq.Source.SChain != nil {
-		clonedReq.Source = nil
-	}
+	clonedReq.Source = applySupplyChainPolicy(clonedReq.Source, a.schainEnabled, a.removePChain)
 
 	if a.ortbVersion == "2.5" {
 		downgradeRequestToORTB25(&clonedReq)
@@ -264,6 +262,44 @@ func mergeSanitizedLists(requestValues, staticValues []string) []string {
 		return nil
 	}
 	return out
+}
+
+func normalizeOutboundTMax(current int64, clientTimeout time.Duration) int64 {
+	budgetMs := int64(clientTimeout / time.Millisecond)
+	if budgetMs <= 0 {
+		return current
+	}
+	if budgetMs > 50 {
+		budgetMs -= 50
+	}
+	if current > 0 && current < budgetMs {
+		return current
+	}
+	return budgetMs
+}
+
+func applySupplyChainPolicy(source *openrtb.Source, schainEnabled, removePChain bool) *openrtb.Source {
+	if source == nil {
+		return nil
+	}
+	sourceCopy := *source
+	if source.SChain != nil {
+		schainCopy := *source.SChain
+		if len(source.SChain.Nodes) > 0 {
+			schainCopy.Nodes = append([]openrtb.SChainNode(nil), source.SChain.Nodes...)
+		}
+		sourceCopy.SChain = &schainCopy
+	}
+	if !schainEnabled {
+		sourceCopy.SChain = nil
+	}
+	if removePChain {
+		sourceCopy.PChain = ""
+	}
+	if sourceCopy.SChain == nil && strings.TrimSpace(sourceCopy.PChain) == "" && strings.TrimSpace(sourceCopy.TID) == "" {
+		return nil
+	}
+	return &sourceCopy
 }
 
 func normalizeListToken(v string) string {

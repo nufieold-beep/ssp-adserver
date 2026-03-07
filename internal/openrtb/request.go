@@ -94,6 +94,22 @@ var defaultSChain = &Source{
 	},
 }
 
+func buildDefaultSource(requestID string) *Source {
+	if defaultSChain == nil {
+		return nil
+	}
+	sourceCopy := *defaultSChain
+	if defaultSChain.SChain != nil {
+		schainCopy := *defaultSChain.SChain
+		if len(defaultSChain.SChain.Nodes) > 0 {
+			schainCopy.Nodes = append([]SChainNode(nil), defaultSChain.SChain.Nodes...)
+		}
+		sourceCopy.SChain = &schainCopy
+	}
+	sourceCopy.TID = requestID
+	return &sourceCopy
+}
+
 // BuildFromHTTP constructs a CTV/in-app video BidRequest from query params
 // with common app/CTV HTTP headers as fallback values.
 func BuildFromHTTP(c *fiber.Ctx) BidRequest {
@@ -216,7 +232,7 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 			COPPA:  0,
 			GPPSID: []int8{0},
 		},
-		Source: defaultSChain,
+		Source: buildDefaultSource(reqID),
 	}
 
 	if ifaType := detectIFAType(ua, deviceMake, deviceOS); ifaType != "" {
