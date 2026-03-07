@@ -129,3 +129,45 @@ func TestBuildFromHTTPPrefersQueryParamsOverHeaders(t *testing.T) {
 		t.Fatalf("expected query country to win, got %#v", got.Device.Geo)
 	}
 }
+
+func TestCleanBundleValueDerivesCanonicalBundleFromStoreURL(t *testing.T) {
+	got := CleanBundleValue("B00V3UTTPSernsp", "", "https://play.google.com/store/apps/details?id=com.frndlytv.channel")
+	if got != "com.frndlytv.channel" {
+		t.Fatalf("expected canonical bundle from store URL, got %q", got)
+	}
+}
+
+func TestCleanBundleValueSuppressesNonCanonicalJunk(t *testing.T) {
+	got := CleanBundleValue("1022720soccha", "", "")
+	if got != "" {
+		t.Fatalf("expected junk bundle to be suppressed, got %q", got)
+	}
+}
+
+func TestBundleFromStoreURLUsesCustomDomainHost(t *testing.T) {
+	got := BundleFromStoreURL("https://seed.verify.app/store")
+	if got != "seed.verify.app" {
+		t.Fatalf("expected custom domain host fallback, got %q", got)
+	}
+}
+
+func TestCanonicalBundleValueRejectsLowConfidenceTwoSegmentBundle(t *testing.T) {
+	got := CanonicalBundleValue("vizio.truliyt")
+	if got != "" {
+		t.Fatalf("expected low-confidence two-segment bundle to be rejected, got %q", got)
+	}
+}
+
+func TestCanonicalBundleValueAcceptsKnownTwoSegmentBundleRoot(t *testing.T) {
+	got := CanonicalBundleValue("tv.tubi")
+	if got != "tv.tubi" {
+		t.Fatalf("expected known two-segment bundle root to be accepted, got %q", got)
+	}
+}
+
+func TestCanonicalBundleValueAcceptsThreeSegmentBundle(t *testing.T) {
+	got := CanonicalBundleValue("com.xumo.historychannel")
+	if got != "com.xumo.historychannel" {
+		t.Fatalf("expected three-segment bundle to be accepted, got %q", got)
+	}
+}

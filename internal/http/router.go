@@ -899,9 +899,10 @@ func enrichFromSupplyTag(req *openrtb.BidRequest, tag *SupplyTag) {
 		}
 	}
 	// App fields: runtime values from the publisher's request take priority.
-	// Supply tag config is used as a fallback when the publisher didn't send a value.
+	// Supply tag config is used as a fallback when the publisher didn't send a
+	// clean canonical app identifier.
 	if req.App != nil {
-		if tag.AppBundle != "" && isSyntheticBundleValue(req.App.Bundle) {
+		if tag.AppBundle != "" && openrtb.CleanBundleValue(req.App.Bundle, req.App.ID, req.App.StoreURL) == "" {
 			req.App.Bundle = tag.AppBundle
 			req.App.ID = tag.AppBundle
 		}
@@ -1113,26 +1114,69 @@ func requestEnvironment(req *openrtb.BidRequest) string {
 	}
 }
 
-func requestBundle(req *openrtb.BidRequest) string {
-	if req == nil || req.App == nil {
-		return ""
+func decisionAuditSource(req *openrtb.BidRequest, tag *SupplyTag, fallback string) string {
+	if tag != nil {
+		if tag.ID > 0 {
+			return strconv.Itoa(tag.ID)
+		}
+		if slotID := strings.TrimSpace(tag.SlotID); slotID != "" {
+			return slotID
+		}
+		if name := strings.TrimSpace(tag.Name); name != "" {
+			return name
+		}
 	}
-	bundle := strings.TrimSpace(req.App.Bundle)
-	if bundle == "" {
-		bundle = strings.TrimSpace(req.App.ID)
+	if req != nil {
+		if len(req.Imp) > 0 {
+			if tagID := strings.TrimSpace(req.Imp[0].TagID); tagID != "" {
+				return tagID
+			}
+		}
+		if req.App != nil && req.App.Publisher != nil {
+			if publisherID := strings.TrimSpace(req.App.Publisher.ID); publisherID != "" {
+				return publisherID
+			}
+		}
 	}
-	if isSyntheticBundleValue(bundle) {
-		return ""
-	}
-	return bundle
+	return strings.TrimSpace(fallback)
 }
 
-func (s *store) recordAdDecision(req *openrtb.BidRequest, winner *openrtb.Bid, winPrice float64, source, demandEp string, campaignID int, campaignName, deliveryStatus string) {
+func decisionAuditBundle(req *openrtb.BidRequest, tag *SupplyTag) string {
+	if req == nil || req.App == nil {
+		if tag == nil {
+			return ""
+		}
+		if bundle := openrtb.CanonicalBundleValue(tag.AppBundle); bundle != "" {
+			return bundle
+		}
+		return openrtb.BundleFromStoreURL(tag.Domain)
+	}
+
+	if bundle := openrtb.CanonicalBundleValue(req.App.Bundle); bundle != "" {
+		return bundle
+	}
+	if tag != nil {
+		if bundle := openrtb.CanonicalBundleValue(tag.AppBundle); bundle != "" {
+			return bundle
+		}
+	}
+	if bundle := openrtb.BundleFromStoreURL(req.App.StoreURL); bundle != "" {
+		return bundle
+	}
+	if bundle := openrtb.CanonicalBundleValue(req.App.ID); bundle != "" {
+		return bundle
+	}
+	if tag != nil {
+		return openrtb.BundleFromStoreURL(tag.Domain)
+	}
+	return ""
+}
+
+func (s *store) recordAdDecision(req *openrtb.BidRequest, winner *openrtb.Bid, winPrice float64, source, appBundle, demandEp string, campaignID int, campaignName, deliveryStatus string) {
 	country := ""
 	if req != nil && req.Device != nil && req.Device.Geo != nil {
 		country = req.Device.Geo.Country
 	}
-	appBundle := requestBundle(req)
 	demandSource := strings.TrimSpace(demandEp)
 	if demandSource == "" && winner != nil {
 		demandSource = strings.TrimSpace(winner.DemandSrc)
@@ -1409,7 +1453,7 @@ func registerEventRoutes(app *fiber.App, metrics *monitor.Metrics) {
 				Country:   c.Query("ctry"),
 				IP:        c.Query("ip"),
 				Supply:    c.Query("sr"),
-				Bundle:    c.Query("bndl"),
+				Bundle:    openrtb.CleanBundleValue(c.Query("bndl"), "", ""),
 				ADomain:   c.Query("adom"),
 				Price:     c.Query("price"),
 			})
@@ -1990,6 +2034,9 @@ func registerAnalyticsRoutes(app *fiber.App, s *store, metrics *monitor.Metrics)
 		if out == nil {
 			out = make([]AdDecision, 0)
 		}
+		for i := range out {
+			out[i].AppBundle = openrtb.CanonicalBundleValue(out[i].AppBundle)
+		}
 		return c.JSON(out)
 	})
 
@@ -1998,6 +2045,9 @@ func registerAnalyticsRoutes(app *fiber.App, s *store, metrics *monitor.Metrics)
 		events := metrics.GetTrafficEvents(filterType)
 		if events == nil {
 			events = make([]monitor.TrafficEvent, 0)
+		}
+		for i := range events {
+			events[i].Bundle = openrtb.CanonicalBundleValue(events[i].Bundle)
 		}
 		return c.JSON(events)
 	})
@@ -2702,10 +2752,13 @@ func registerSupplyDemandRoutes(app *fiber.App, s *store, eDeps *EnterpriseDeps,
 
 // ── Pipeline Handler (Enterprise) ──
 
-func handlePipelineServeResult(c *fiber.Ctx, p *pipeline.Pipeline, metrics *monitor.Metrics, s *store, req *openrtb.BidRequest, result *pipeline.Result, decisionSource string) error {
+func handlePipelineServeResult(c *fiber.Ctx, p *pipeline.Pipeline, metrics *monitor.Metrics, s *store, req *openrtb.BidRequest, result *pipeline.Result, sourceTag *SupplyTag, decisionSource string) error {
 	if result.Error != nil {
 		return c.Status(500).JSON(fiber.Map{"error": result.Error.Error()})
 	}
+
+	auditSource := decisionAuditSource(req, sourceTag, decisionSource)
+	auditBundle := decisionAuditBundle(req, sourceTag)
 
 	if result.NoBid || result.Winner == nil || strings.TrimSpace(result.VAST) == "" {
 		return c.Type("xml").SendString(vast.BuildNoAd())
@@ -2721,7 +2774,7 @@ func handlePipelineServeResult(c *fiber.Ctx, p *pipeline.Pipeline, metrics *moni
 			Env:       requestEnvironment(req),
 			Details:   deliveryStatus,
 			Campaign:  campaignName,
-			Bundle:    requestBundle(req),
+			Bundle:    auditBundle,
 			ADomain:   winnerPrimaryDomain(result.Winner),
 		})
 		return c.Type("xml").SendString(vast.BuildNoAd())
@@ -2736,7 +2789,7 @@ func handlePipelineServeResult(c *fiber.Ctx, p *pipeline.Pipeline, metrics *moni
 		cm.SpendMu.Unlock()
 	}
 
-	s.recordAdDecision(req, result.Winner, result.WinPrice, decisionSource, result.AdapterID, campaignID, campaignName, deliveryStatus)
+	s.recordAdDecision(req, result.Winner, result.WinPrice, auditSource, auditBundle, result.AdapterID, campaignID, campaignName, deliveryStatus)
 	p.FinalizeDelivery(result)
 
 	return c.Type("xml").SendString(result.VAST)
@@ -2848,7 +2901,7 @@ func supplyTagVastHandler(p *pipeline.Pipeline, metrics *monitor.Metrics, s *sto
 			result = p.Execute(c.Context(), &req, c.BaseURL())
 		}
 
-		return handlePipelineServeResult(c, p, metrics, s, &req, result, "supply_tag")
+		return handlePipelineServeResult(c, p, metrics, s, &req, result, tag, "supply_tag")
 	}
 }
 
@@ -2879,7 +2932,7 @@ func pipelineHandler(p *pipeline.Pipeline, metrics *monitor.Metrics, s *store) f
 
 		result := p.Execute(c.Context(), &req, c.BaseURL())
 
-		return handlePipelineServeResult(c, p, metrics, s, &req, result, "pipeline")
+		return handlePipelineServeResult(c, p, metrics, s, &req, result, supplyTag, "pipeline")
 	}
 }
 

@@ -69,7 +69,7 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 
 	bundle := ""
 	if req.App != nil {
-		bundle = req.App.Bundle
+		bundle = openrtb.CleanBundleValue(req.App.Bundle, req.App.ID, req.App.StoreURL)
 	}
 	if hasAdRequestSubscriber {
 		p.Bus.Publish(eventbus.Event{Type: eventbus.EvtAdRequest, Data: map[string]interface{}{

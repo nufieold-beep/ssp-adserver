@@ -202,7 +202,7 @@ func impressionBlock(evtBase string, bid *openrtb.Bid, req *openrtb.BidRequest) 
 	}
 	bndl := ""
 	if req.App != nil {
-		bndl = req.App.Bundle
+		bndl = openrtb.CleanBundleValue(req.App.Bundle, req.App.ID, req.App.StoreURL)
 	}
 	adom := ""
 	if len(bid.ADomain) > 0 {

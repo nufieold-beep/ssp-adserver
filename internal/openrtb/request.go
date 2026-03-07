@@ -2,6 +2,7 @@ package openrtb
 
 import (
 	"encoding/json"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -276,6 +277,188 @@ func normalizeBundleToken(v string) string {
 		return "unknown"
 	}
 	return v
+}
+
+// CanonicalBundleValue normalizes a bundle candidate and returns it only when it
+// looks like a canonical bundle/package identifier.
+func CanonicalBundleValue(value string) string {
+	value = normalizeCleanBundleValue(value)
+	if !looksCanonicalCleanBundle(value) {
+		return ""
+	}
+	return value
+}
+
+// BundleFromStoreURL derives the cleanest bundle candidate available from a
+// store URL or domain-like value.
+func BundleFromStoreURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if !strings.Contains(raw, "://") {
+		return CanonicalBundleValue(raw)
+	}
+
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+
+	for _, key := range []string{"id", "app_id", "appid", "bundle", "bundle_id", "package", "package_name", "pkg"} {
+		if candidate := CanonicalBundleValue(u.Query().Get(key)); candidate != "" {
+			return candidate
+		}
+	}
+
+	for _, segment := range strings.Split(u.Path, "/") {
+		if candidate := CanonicalBundleValue(segment); candidate != "" {
+			return candidate
+		}
+	}
+
+	host := normalizeCleanBundleValue(trimCommonHostPrefix(u.Hostname()))
+	if host == "" || isGenericStoreHost(host) || !looksCanonicalCleanBundle(host) {
+		return ""
+	}
+	return host
+}
+
+// CleanBundleValue returns the best clean bundle candidate available for
+// analytics/reporting without mutating the original request payload.
+func CleanBundleValue(bundle, appID, storeURL string) string {
+	if candidate := CanonicalBundleValue(bundle); candidate != "" {
+		return candidate
+	}
+	if candidate := BundleFromStoreURL(storeURL); candidate != "" {
+		return candidate
+	}
+	if candidate := CanonicalBundleValue(appID); candidate != "" {
+		return candidate
+	}
+	return ""
+}
+
+func normalizeCleanBundleValue(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "" {
+		return ""
+	}
+
+	hadScheme := false
+	if idx := strings.Index(value, "://"); idx >= 0 {
+		value = value[idx+3:]
+		hadScheme = true
+	}
+	if idx := strings.IndexAny(value, "?#"); idx >= 0 {
+		value = value[:idx]
+	}
+	if hadScheme {
+		if idx := strings.Index(value, "/"); idx >= 0 {
+			value = value[:idx]
+		}
+	}
+
+	var b strings.Builder
+	b.Grow(len(value))
+	lastDot := false
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastDot = false
+		case r == '.' || r == '-' || r == '_' || r == ' ' || r == '/' || r == '\\' || r == ':':
+			if b.Len() > 0 && !lastDot {
+				b.WriteByte('.')
+				lastDot = true
+			}
+		}
+	}
+
+	normalized := strings.Trim(b.String(), ".")
+	if normalized == "" || isSyntheticGeneratedBundle(normalized) {
+		return ""
+	}
+	return normalized
+}
+
+func looksCanonicalCleanBundle(value string) bool {
+	parts := strings.Split(value, ".")
+	if len(parts) < 2 {
+		return false
+	}
+
+	alphaParts := 0
+	for _, part := range parts {
+		if part == "" {
+			return false
+		}
+		if containsAlpha(part) {
+			alphaParts++
+		}
+	}
+	if alphaParts < 2 {
+		return false
+	}
+
+	if len(parts) >= 3 {
+		return true
+	}
+
+	return isKnownBundleRoot(parts[0]) && len(parts[1]) >= 3 && containsAlpha(parts[1])
+}
+
+func isSyntheticGeneratedBundle(value string) bool {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if value == "" {
+		return true
+	}
+	return value == "app.unknown" || strings.HasPrefix(value, "supply.")
+}
+
+func containsAlpha(value string) bool {
+	for _, r := range value {
+		if r >= 'a' && r <= 'z' {
+			return true
+		}
+	}
+	return false
+}
+
+func isKnownBundleRoot(value string) bool {
+	switch strings.TrimSpace(strings.ToLower(value)) {
+	case "app", "co", "com", "dev", "io", "me", "media", "net", "org", "tv":
+		return true
+	default:
+		return false
+	}
+}
+
+func trimCommonHostPrefix(host string) string {
+	host = strings.TrimSpace(strings.ToLower(host))
+	return strings.TrimPrefix(host, "www.")
+}
+
+func isGenericStoreHost(host string) bool {
+	host = trimCommonHostPrefix(host)
+	switch {
+	case host == "play.google.com":
+		return true
+	case host == "apps.apple.com":
+		return true
+	case host == "itunes.apple.com":
+		return true
+	case host == "amazon.com", strings.HasSuffix(host, ".amazon.com"):
+		return true
+	case host == "roku.com", strings.HasSuffix(host, ".roku.com"):
+		return true
+	case host == "lgappstv.com", strings.HasSuffix(host, ".lgappstv.com"):
+		return true
+	case host == "samsung.com", strings.HasSuffix(host, ".samsung.com"):
+		return true
+	default:
+		return false
+	}
 }
 
 func requestValue(c *fiber.Ctx, queries map[string]string, queryKeys []string, headerKeys ...string) string {

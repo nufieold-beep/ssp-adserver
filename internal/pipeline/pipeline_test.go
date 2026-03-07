@@ -305,6 +305,47 @@ func TestExecuteIncludesNoBidAdapterDetails(t *testing.T) {
 	}
 }
 
+func TestExecuteUsesCleanBundleInTrafficEvents(t *testing.T) {
+	reg := adapter.NewRegistry()
+	reg.Register(&noBidAdapter{id: "no-bid-adapter"}, &adapter.AdapterConfig{ID: "no-bid-adapter", Name: "No Bid Adapter", Type: adapter.TypeORTB, Endpoint: "http://unused", Status: 1})
+
+	metrics := monitor.New()
+	p := &pipeline.Pipeline{
+		Registry:    reg,
+		FloorEngine: floor.NewEngine(),
+		AQScanner:   adquality.NewScanner(),
+		Metrics:     metrics,
+		AuctionType: "first_price",
+		DefaultTMax: 100,
+	}
+
+	req := &openrtb.BidRequest{
+		ID:  "req-clean-bundle",
+		Imp: []openrtb.Imp{{ID: "imp-1", BidFloor: 0.5, TagID: "tag-1"}},
+		App: &openrtb.App{Bundle: "B00V3UTTPSernsp", StoreURL: "https://play.google.com/store/apps/details?id=com.clean.bundle"},
+	}
+
+	result := p.Execute(context.Background(), req, "https://ads.example.com")
+	if !result.NoBid {
+		t.Fatal("expected no bid result for explicit no-bid adapter")
+	}
+
+	noBidEvents := metrics.GetTrafficEvents("no_bid")
+	if len(noBidEvents) == 0 {
+		t.Fatal("expected no_bid traffic event to be recorded")
+	}
+	if got := noBidEvents[len(noBidEvents)-1].Bundle; got != "com.clean.bundle" {
+		t.Fatalf("expected clean bundle in traffic event, got %q", got)
+	}
+	requestEvents := metrics.GetTrafficEvents("ortb_request")
+	if len(requestEvents) == 0 {
+		t.Fatal("expected ortb_request traffic event to be recorded")
+	}
+	if got := requestEvents[len(requestEvents)-1].Bundle; got != "com.clean.bundle" {
+		t.Fatalf("expected clean bundle in request event, got %q", got)
+	}
+}
+
 func waitForCount(t *testing.T, counter *atomic.Int64, want int64, timeout time.Duration, label string) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)

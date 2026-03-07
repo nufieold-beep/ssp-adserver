@@ -374,7 +374,7 @@ textarea{resize:vertical;min-height:68px}
     <div class="card-header"><h3>Recent Decisions</h3></div>
     <div class="card-body table-wrap">
       <table><thead><tr>
-        <th>Time</th><th>Creative ID</th><th>Source</th><th>ADomain</th>
+        <th>Time</th><th>Creative ID</th><th>Source ID</th><th>ADomain</th>
         <th>Bid $</th><th>Net $</th><th>Seat</th><th>ADM Type</th>
         <th>Bundle</th><th>Country</th><th>Device</th>
       </tr></thead>
@@ -845,6 +845,16 @@ function $v(id){return $(id)?.value??''}
 function fmtMoney(n){return '$'+Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}
 function fmtNum(n){return Number(n||0).toLocaleString('en-US')}
 function esc(s){const d=document.createElement('div');d.textContent=s||'';return d.innerHTML}
+function cleanBundleDisplay(v){
+  const value=(v||'').trim().toLowerCase();
+  if(!value) return '—';
+  const parts=value.split('.').filter(Boolean);
+  const hasAlpha=s=>/[a-z]/.test(s);
+  if(parts.length>=3 && parts.filter(hasAlpha).length>=2) return esc(value);
+  const roots=new Set(['app','co','com','dev','io','me','media','net','org','tv']);
+  if(parts.length===2 && roots.has(parts[0]) && parts[1].length>=3 && hasAlpha(parts[1])) return esc(value);
+  return '—';
+}
 function badge(s){return `<span class="badge ${STATUS_CLS[s]||'badge-inactive'}">${STATUS_MAP[s]||'—'}</span>`}
 function truncUrl(u,m=40){return u&&u.length>m?u.substring(0,m)+'…':u||''}
 function toast(msg,type='success'){const el=document.createElement('div');el.className=`toast toast-${type}`;el.textContent=msg;$('toastContainer').appendChild(el);setTimeout(()=>el.remove(),4000)}
@@ -1106,7 +1116,7 @@ async function loadDecisions() {
       <td>${esc(d.creative_id||'—')}</td><td>${esc(d.source||'—')}</td><td>${esc(d.adomain||'—')}</td>
       <td>${fmtMoney(d.bid_price)}</td><td>${fmtMoney(d.net_price)}</td>
       <td>${esc(d.seat||'—')}</td><td>${esc(d.adm_type||'—')}</td>
-      <td>${esc(d.app_bundle||'—')}</td><td>${esc(d.country||'—')}</td><td>${esc(d.device_type||'—')}</td>
+      <td>${cleanBundleDisplay(d.app_bundle)}</td><td>${esc(d.country||'—')}</td><td>${esc(d.device_type||'—')}</td>
     </tr>`).join(''):'<tr><td colspan="11" class="empty">No decisions</td></tr>';
   } catch(e) {}
 }
