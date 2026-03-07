@@ -286,10 +286,17 @@ func (m *Metrics) GetDeliveryHealth() DeliveryHealth {
 		Errors:      errs,
 	}
 	if imps > 0 {
+		// Cap start rate at 100% for dashboard readability when event streams
+		// are partially sampled or arrive out of order.
 		h.StartRate = float64(starts) / float64(imps) * 100
-		h.VTR = float64(completions) / float64(imps) * 100
-		h.SkipRate = float64(skips) / float64(imps) * 100
-		h.ErrorRate = float64(errs) / float64(imps) * 100
+		if h.StartRate > 100 {
+			h.StartRate = 100
+		}
+	}
+	if starts > 0 {
+		h.VTR = float64(completions) / float64(starts) * 100
+		h.SkipRate = float64(skips) / float64(starts) * 100
+		h.ErrorRate = float64(errs) / float64(starts) * 100
 	}
 	return h
 }

@@ -152,6 +152,9 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 				}})
 			}
 		}
+		for i := range br.Bids {
+			br.Bids[i].DemandSrc = br.AdapterID
+		}
 		candidateBids = append(candidateBids, br.Bids...)
 	}
 
@@ -226,7 +229,6 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 	// ── Stage 9: Billing & metrics (impression counted on client-side pixel fire) ──
 	p.Metrics.RecordWin(auctionResult.WinPrice)
 	p.Metrics.RecordSpend(winner.ReportingPrice(auctionResult.WinPrice))
-	p.Metrics.RecordVastStart()
 
 	p.Metrics.AddTrafficEvent(monitor.TrafficEvent{
 		Type: "ortb_response", RequestID: req.ID, Env: detectRequestEnvironment(req),
@@ -240,6 +242,10 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 	result.Losers = auctionResult.Losers
 	result.VAST = xml
 	result.AuctionType = auctionType
+	result.AdapterID = winner.DemandSrc
+	if result.AdapterID == "" {
+		result.AdapterID = winner.Seat
+	}
 	result.TotalLatency = time.Since(start)
 	return result
 }

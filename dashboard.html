@@ -1026,13 +1026,14 @@ async function loadVastDelivery() {
       api('/api/v1/analytics/overview'),
       api('/api/v1/analytics/reports/vast-errors')
     ]);
-    const h=health, reqs=overview.ad_requests||0, imps=h.impressions||0, noBids=overview.no_bids||0;
+    const h=health, wins=overview.bid_wins||0, noBids=overview.no_bids||0;
+    const auctionOutcomes=wins+noBids;
     $('vdStartRate').textContent=(h.start_rate||0).toFixed(1)+'%';
     $('vdVtr').textContent=(h.vtr||0).toFixed(1)+'%';
     $('vdSkipRate').textContent=(h.skip_rate||0).toFixed(1)+'%';
     $('vdErrorRate').textContent=(h.error_rate||0).toFixed(1)+'%';
-    $('vdFillRate').textContent=pct(imps,reqs);
-    $('vdNoBidRate').textContent=pct(noBids,reqs);
+    $('vdFillRate').textContent=pct(wins,auctionOutcomes);
+    $('vdNoBidRate').textContent=pct(noBids,auctionOutcomes);
 
     buildFunnel('vdFunnel', [
       {label:'Impressions',value:h.impressions||0},{label:'Starts',value:h.starts||0},

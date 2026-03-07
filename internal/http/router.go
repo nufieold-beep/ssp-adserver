@@ -752,6 +752,14 @@ func (s *store) lookupActiveSupplyTagByKey(tagKey string) *SupplyTag {
 	return nil
 }
 
+func isSyntheticBundleValue(bundle string) bool {
+	b := strings.ToLower(strings.TrimSpace(bundle))
+	if b == "" || b == "app.unknown" {
+		return true
+	}
+	return strings.HasPrefix(b, "supply.")
+}
+
 // enrichFromSupplyTag overrides the BidRequest fields with the supply tag
 // configuration set in the dashboard. The dashboard config is the source of
 // truth — it always overrides the query-param defaults.
@@ -811,7 +819,7 @@ func enrichFromSupplyTag(req *openrtb.BidRequest, tag *SupplyTag) {
 	// App fields: runtime values from the publisher's request take priority.
 	// Supply tag config is used as a fallback when the publisher didn't send a value.
 	if req.App != nil {
-		if tag.AppBundle != "" && req.App.Bundle == "" {
+		if tag.AppBundle != "" && isSyntheticBundleValue(req.App.Bundle) {
 			req.App.Bundle = tag.AppBundle
 			req.App.ID = tag.AppBundle
 		}
@@ -1025,7 +1033,14 @@ func requestBundle(req *openrtb.BidRequest) string {
 	if req == nil || req.App == nil {
 		return ""
 	}
-	return req.App.Bundle
+	bundle := strings.TrimSpace(req.App.Bundle)
+	if bundle == "" {
+		bundle = strings.TrimSpace(req.App.ID)
+	}
+	if isSyntheticBundleValue(bundle) {
+		return ""
+	}
+	return bundle
 }
 
 func (s *store) recordAdDecision(req *openrtb.BidRequest, winner *openrtb.Bid, winPrice float64, source, demandEp string, campaignID int, campaignName, deliveryStatus string) {
@@ -1035,12 +1050,16 @@ func (s *store) recordAdDecision(req *openrtb.BidRequest, winner *openrtb.Bid, w
 	if req != nil && req.Device != nil && req.Device.Geo != nil {
 		country = req.Device.Geo.Country
 	}
-	appBundle := ""
-	if req != nil && req.App != nil {
-		appBundle = req.App.Bundle
+	appBundle := requestBundle(req)
+	demandSource := strings.TrimSpace(demandEp)
+	if demandSource == "" && winner != nil {
+		demandSource = strings.TrimSpace(winner.DemandSrc)
+		if demandSource == "" {
+			demandSource = strings.TrimSpace(winner.Seat)
+		}
 	}
 	adomain := ""
-	if len(winner.ADomain) > 0 {
+	if winner != nil && len(winner.ADomain) > 0 {
 		adomain = winner.ADomain[0]
 	}
 	devType := "CTV"
@@ -1059,15 +1078,27 @@ func (s *store) recordAdDecision(req *openrtb.BidRequest, winner *openrtb.Bid, w
 		devType = "STB"
 	}
 
-	netPrice := winner.ReportingPrice(winPrice)
+	netPrice := 0.0
+	if winner != nil {
+		netPrice = winner.ReportingPrice(winPrice)
+	}
+
+	creativeID := ""
+	seat := ""
+	bidPrice := 0.0
+	if winner != nil {
+		creativeID = winner.CrID
+		seat = winner.Seat
+		bidPrice = winner.Price
+	}
 
 	s.adDecisions = append(s.adDecisions, AdDecision{
 		Time: time.Now(), CampaignID: campaignID, Campaign: campaignName,
-		CreativeID: winner.CrID, Source: source,
-		ADomain: adomain, Seat: winner.Seat,
-		BidPrice: winner.Price, NetPrice: netPrice,
+		CreativeID: creativeID, Source: source,
+		ADomain: adomain, Seat: seat,
+		BidPrice: bidPrice, NetPrice: netPrice,
 		AdmType: "vast", AppBundle: appBundle, Country: country, DeviceType: devType,
-		DemandEp: demandEp, Delivery: deliveryStatus,
+		DemandEp: demandSource, Delivery: deliveryStatus,
 	})
 	if len(s.adDecisions) > 500 {
 		s.adDecisions = s.adDecisions[len(s.adDecisions)-500:]
@@ -1750,9 +1781,13 @@ func registerAnalyticsRoutes(app *fiber.App, s *store, metrics *monitor.Metrics)
 		}
 		groups := make(map[string]*agg)
 		for _, d := range s.adDecisions {
-			key := d.DemandEp + "|" + d.ADomain + "|" + d.CreativeID
+			demandID := strings.TrimSpace(d.DemandEp)
+			if demandID == "" {
+				demandID = strings.TrimSpace(d.Seat)
+			}
+			key := demandID + "|" + d.ADomain + "|" + d.CreativeID
 			if groups[key] == nil {
-				groups[key] = &agg{DemandID: d.DemandEp, ADomain: d.ADomain, CreativeID: d.CreativeID}
+				groups[key] = &agg{DemandID: demandID, ADomain: d.ADomain, CreativeID: d.CreativeID}
 			}
 			groups[key].Imps++
 			groups[key].NetRev += d.NetPrice / 1000.0
