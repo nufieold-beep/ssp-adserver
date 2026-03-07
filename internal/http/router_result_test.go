@@ -201,6 +201,7 @@ func TestServedExportRowUsesDemandORTBEndpointID(t *testing.T) {
 
 	req := &openrtb.BidRequest{
 		ID:  "req-served-export",
+		Imp: []openrtb.Imp{{BidFloor: 2.5}},
 		App: &openrtb.App{Bundle: "com.example.app"},
 		Device: &openrtb.Device{
 			Geo: &openrtb.Geo{Country: "USA"},
@@ -242,6 +243,9 @@ func TestServedExportRowUsesDemandORTBEndpointID(t *testing.T) {
 	}
 	if got := buckets[0].SourceIDRevenue; got != 0.003 {
 		t.Fatalf("expected source supply revenue 0.003, got %.6f", got)
+	}
+	if got := buckets[0].SourceIDFloorCPMSum; got != 2.5 {
+		t.Fatalf("expected source floor cpm sum 2.5, got %.2f", got)
 	}
 	if got := buckets[0].TotalRevenue; got != 0.004 {
 		t.Fatalf("expected total revenue 0.004, got %.6f", got)

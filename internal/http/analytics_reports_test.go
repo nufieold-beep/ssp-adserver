@@ -226,6 +226,7 @@ func TestPersistedAnalyticsTotalsSurviveRuntimeStateReload(t *testing.T) {
 		FilledOpportunities: 1,
 		Impressions:         1,
 		SourceIDRevenue:     0.003,
+		SourceIDFloorCPMSum: 2.5,
 		TotalRevenue:        0.004,
 	}})
 	write := s.prepareSupplyDemandStateWriteLocked()
@@ -269,6 +270,9 @@ func TestPersistedAnalyticsTotalsSurviveRuntimeStateReload(t *testing.T) {
 	if got := exportBuckets[0].DemandEndpointID; got != 7 {
 		t.Fatalf("expected persisted export demand endpoint id 7, got %d", got)
 	}
+	if got := exportBuckets[0].SourceIDFloorCPMSum; !almostEqualFloat(got, 2.5) {
+		t.Fatalf("expected persisted source floor cpm sum 2.5, got %.2f", got)
+	}
 
 	app := fiber.New()
 	registerAnalyticsRoutes(app, reloaded, reloaded.metrics)
@@ -306,6 +310,7 @@ func TestBuildMetricsExportRowsGroupsByDateAndHour(t *testing.T) {
 			FilledOpportunities: 4,
 			Impressions:         3,
 			SourceIDRevenue:     0.012,
+			SourceIDFloorCPMSum: 8.0,
 			TotalRevenue:        0.016,
 		},
 		{
@@ -319,6 +324,7 @@ func TestBuildMetricsExportRowsGroupsByDateAndHour(t *testing.T) {
 			FilledOpportunities: 1,
 			Impressions:         1,
 			SourceIDRevenue:     0.003,
+			SourceIDFloorCPMSum: 2.0,
 			TotalRevenue:        0.004,
 		},
 		{
@@ -332,6 +338,7 @@ func TestBuildMetricsExportRowsGroupsByDateAndHour(t *testing.T) {
 			FilledOpportunities: 10,
 			Impressions:         8,
 			SourceIDRevenue:     0.030,
+			SourceIDFloorCPMSum: 20.0,
 			TotalRevenue:        0.040,
 		},
 	}
@@ -356,8 +363,8 @@ func TestBuildMetricsExportRowsGroupsByDateAndHour(t *testing.T) {
 	if !almostEqualFloat(dateRows[0].SourceIDRevenue, 0.015) {
 		t.Fatalf("expected first daily row source revenue 0.015, got %.6f", dateRows[0].SourceIDRevenue)
 	}
-	if !almostEqualFloat(dateRows[0].SourceIDECPM, 3.0) {
-		t.Fatalf("expected first daily row source eCPM 3.0, got %.2f", dateRows[0].SourceIDECPM)
+	if !almostEqualFloat(dateRows[0].SourceIDECPM, 2.0) {
+		t.Fatalf("expected first daily row source eCPM 2.0 from floor price, got %.2f", dateRows[0].SourceIDECPM)
 	}
 
 	hourQuery, err := resolveMetricsExportQuery("custom", "hour", "2026-03-06", "2026-03-06", "10", "11", time.Date(2026, time.March, 7, 12, 0, 0, 0, time.UTC))
@@ -401,6 +408,7 @@ func TestMetricsExportRouteReturnsCSV(t *testing.T) {
 		FilledOpportunities: 4,
 		Impressions:         3,
 		SourceIDRevenue:     0.012,
+		SourceIDFloorCPMSum: 8.0,
 		TotalRevenue:        0.016,
 	}})
 	s.mu.Unlock()
@@ -421,15 +429,13 @@ func TestMetricsExportRouteReturnsCSV(t *testing.T) {
 	if !strings.Contains(text, "Date,Hour,Source ID,Demand ORTB Endpoint ID,Country Code,Country,Bundle ID,Ad Requests,Ad Opportunities,Impressions,Source ID Revenue,Source ID eCPM,Demand ORTB Endpoints Revenue,eCPM") {
 		t.Fatalf("expected csv header, got %q", text)
 	}
-	if !strings.Contains(text, "2026-03-06,10:00,11,77,USA,United States,com.example.app,10,10,3,0.012000,3.00,0.016000,4.00") {
+	if !strings.Contains(text, "2026-03-06,10:00,11,77,USA,United States,com.example.app,10,10,3,0.012000,2.00,0.016000,4.00") {
 		t.Fatalf("expected csv row for exported hour, got %q", text)
 	}
 }
 
-func TestMetricsExportLoadMigratesLegacyMarginRevenueToSupplyRevenue(t *testing.T) {
-	s := newStore()
-	s.mu.Lock()
-	s.loadMetricsExportBucketsLocked([]metricsExportBucket{{
+func TestBuildMetricsExportRowsFallsBackToSourceRevenueWhenFloorCPMIsMissing(t *testing.T) {
+	buckets := []metricsExportBucket{{
 		Hour:                time.Date(2026, time.March, 7, 9, 0, 0, 0, time.UTC),
 		SourceID:            11,
 		DemandEndpointID:    7,
@@ -439,8 +445,38 @@ func TestMetricsExportLoadMigratesLegacyMarginRevenueToSupplyRevenue(t *testing.
 		AdOpportunities:     1,
 		FilledOpportunities: 1,
 		Impressions:         1,
-		LegacySourceMarginRevenue: 0.001,
+		SourceIDRevenue:     0.003,
 		TotalRevenue:        0.004,
+	}}
+
+	query, err := resolveMetricsExportQuery("today", "summary", "", "", "", "", time.Date(2026, time.March, 7, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("unexpected summary export query error: %v", err)
+	}
+	rows := buildMetricsExportRows(buckets, query)
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 summary row, got %d", len(rows))
+	}
+	if !almostEqualFloat(rows[0].SourceIDECPM, 3.0) {
+		t.Fatalf("expected legacy source eCPM fallback 3.0, got %.2f", rows[0].SourceIDECPM)
+	}
+}
+
+func TestMetricsExportLoadMigratesLegacyMarginRevenueToSupplyRevenue(t *testing.T) {
+	s := newStore()
+	s.mu.Lock()
+	s.loadMetricsExportBucketsLocked([]metricsExportBucket{{
+		Hour:                      time.Date(2026, time.March, 7, 9, 0, 0, 0, time.UTC),
+		SourceID:                  11,
+		DemandEndpointID:          7,
+		CountryCode:               "USA",
+		BundleID:                  "com.example.app",
+		AdRequests:                1,
+		AdOpportunities:           1,
+		FilledOpportunities:       1,
+		Impressions:               1,
+		LegacySourceMarginRevenue: 0.001,
+		TotalRevenue:              0.004,
 	}})
 	s.mu.Unlock()
 

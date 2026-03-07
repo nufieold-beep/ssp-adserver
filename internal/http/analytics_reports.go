@@ -114,28 +114,29 @@ type metricsExportQuery struct {
 }
 
 type metricsExportBucket struct {
-	Hour                time.Time `json:"hour"`
-	SourceID            int       `json:"source_id,omitempty"`
-	DemandEndpointID    int       `json:"demand_endpoint_id,omitempty"`
-	LegacyCampaignID    int       `json:"campaign_id,omitempty"`
-	CountryCode         string    `json:"country_code,omitempty"`
-	BundleID            string    `json:"bundle_id,omitempty"`
-	AdRequests          int64     `json:"ad_requests"`
-	AdOpportunities     int64     `json:"ad_opportunities"`
-	FilledOpportunities int64     `json:"filled_opportunities"`
-	Impressions         int64     `json:"impressions"`
-	SourceIDRevenue     float64   `json:"source_id_revenue,omitempty"`
-	LegacySourceMarginRevenue float64 `json:"source_margin_revenue,omitempty"`
-	LegacyChannelRevenue float64  `json:"channel_revenue,omitempty"`
-	TotalRevenue        float64   `json:"total_revenue"`
+	Hour                      time.Time `json:"hour"`
+	SourceID                  int       `json:"source_id,omitempty"`
+	DemandEndpointID          int       `json:"demand_endpoint_id,omitempty"`
+	LegacyCampaignID          int       `json:"campaign_id,omitempty"`
+	CountryCode               string    `json:"country_code,omitempty"`
+	BundleID                  string    `json:"bundle_id,omitempty"`
+	AdRequests                int64     `json:"ad_requests"`
+	AdOpportunities           int64     `json:"ad_opportunities"`
+	FilledOpportunities       int64     `json:"filled_opportunities"`
+	Impressions               int64     `json:"impressions"`
+	SourceIDRevenue           float64   `json:"source_id_revenue,omitempty"`
+	SourceIDFloorCPMSum       float64   `json:"source_id_floor_cpm_sum,omitempty"`
+	LegacySourceMarginRevenue float64   `json:"source_margin_revenue,omitempty"`
+	LegacyChannelRevenue      float64   `json:"channel_revenue,omitempty"`
+	TotalRevenue              float64   `json:"total_revenue"`
 }
 
 type metricsExportDeliveryContext struct {
-	RecordedAt        time.Time
-	SourceID          int
-	DemandEndpointID  int
-	CountryCode       string
-	BundleID          string
+	RecordedAt       time.Time
+	SourceID         int
+	DemandEndpointID int
+	CountryCode      string
+	BundleID         string
 }
 
 type metricsExportAccumulator struct {
@@ -144,6 +145,7 @@ type metricsExportAccumulator struct {
 	FilledOpportunities int64
 	Impressions         int64
 	SourceIDRevenue     float64
+	SourceIDFloorCPMSum float64
 	TotalRevenue        float64
 }
 
@@ -445,6 +447,9 @@ func (s *store) normalizeMetricsExportBucketLocked(bucket metricsExportBucket) m
 			bucket.SourceIDRevenue = bucket.TotalRevenue * (1 - margin)
 		}
 	}
+	if bucket.SourceIDFloorCPMSum < 0 {
+		bucket.SourceIDFloorCPMSum = 0
+	}
 	bucket.LegacyCampaignID = 0
 	bucket.LegacySourceMarginRevenue = 0
 	bucket.LegacyChannelRevenue = 0
@@ -482,6 +487,7 @@ func (s *store) addMetricsExportBucketLocked(bucket metricsExportBucket) {
 	existing.FilledOpportunities += bucket.FilledOpportunities
 	existing.Impressions += bucket.Impressions
 	existing.SourceIDRevenue += bucket.SourceIDRevenue
+	existing.SourceIDFloorCPMSum += bucket.SourceIDFloorCPMSum
 	existing.TotalRevenue += bucket.TotalRevenue
 	s.metricsExportBuckets[key] = existing
 }
@@ -511,6 +517,7 @@ func (s *store) recordMetricsExportRequestOutcome(req *openrtb.BidRequest, sourc
 		AdOpportunities:     1,
 		FilledOpportunities: filledOpportunities,
 		SourceIDRevenue:     sourceRevenue,
+		SourceIDFloorCPMSum: metricsRequestFloorCPMSum(req, filledOpportunities),
 		TotalRevenue:        totalRevenue,
 	}
 
@@ -820,6 +827,13 @@ func analyticsCPM(revenue float64, filledOpportunities int64) float64 {
 	return (revenue / float64(filledOpportunities)) * 1000
 }
 
+func analyticsAverageCPM(totalCPMSum float64, filledOpportunities int64) float64 {
+	if filledOpportunities <= 0 {
+		return 0
+	}
+	return totalCPMSum / float64(filledOpportunities)
+}
+
 func normalizeMetricsMargin(margin float64) float64 {
 	if margin <= 0 {
 		return 0
@@ -839,6 +853,27 @@ func metricsSupplyRevenue(grossRevenue, marginRevenue float64) float64 {
 		return 0
 	}
 	return supplyRevenue
+}
+
+func metricsRequestFloorCPMSum(req *openrtb.BidRequest, filledOpportunities int64) float64 {
+	if filledOpportunities <= 0 || req == nil || len(req.Imp) == 0 {
+		return 0
+	}
+	floor := req.Imp[0].BidFloor
+	if floor <= 0 {
+		return 0
+	}
+	return floor * float64(filledOpportunities)
+}
+
+func metricsSourceIDECPMSum(bucket metricsExportBucket) float64 {
+	if bucket.SourceIDFloorCPMSum > 0 {
+		return bucket.SourceIDFloorCPMSum
+	}
+	if bucket.FilledOpportunities <= 0 {
+		return 0
+	}
+	return bucket.SourceIDRevenue * 1000
 }
 
 func metricsRevenuesEqual(left, right float64) bool {
@@ -1159,7 +1194,7 @@ func buildMetricsExportRows(buckets []metricsExportBucket, query metricsExportQu
 			AdOpportunities:     row.acc.AdOpportunities,
 			Impressions:         row.acc.Impressions,
 			SourceIDRevenue:     row.acc.SourceIDRevenue,
-			SourceIDECPM:        analyticsCPM(row.acc.SourceIDRevenue, row.acc.FilledOpportunities),
+			SourceIDECPM:        analyticsAverageCPM(row.acc.SourceIDFloorCPMSum, row.acc.FilledOpportunities),
 			TotalRevenue:        row.acc.TotalRevenue,
 			AdRequestFillRate:   analyticsPercent(row.acc.FilledOpportunities, row.acc.AdRequests),
 			OpportunityFillRate: analyticsPercent(row.acc.Impressions, row.acc.AdOpportunities),
@@ -1380,5 +1415,6 @@ func (a *metricsExportAccumulator) addBucket(bucket metricsExportBucket) {
 	a.FilledOpportunities += bucket.FilledOpportunities
 	a.Impressions += bucket.Impressions
 	a.SourceIDRevenue += bucket.SourceIDRevenue
+	a.SourceIDFloorCPMSum += metricsSourceIDECPMSum(bucket)
 	a.TotalRevenue += bucket.TotalRevenue
 }
