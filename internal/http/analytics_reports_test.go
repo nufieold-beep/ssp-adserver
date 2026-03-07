@@ -426,7 +426,7 @@ func TestMetricsExportRouteReturnsCSV(t *testing.T) {
 		t.Fatalf("failed to read csv export body: %v", err)
 	}
 	text := string(body)
-	if !strings.Contains(text, "Date,Hour,Source ID,Demand ORTB Endpoint ID,Country Code,Country,Bundle ID,Ad Requests,Ad Opportunities,Impressions,Source ID Revenue,Source ID eCPM,Demand ORTB Endpoints Revenue,eCPM") {
+	if !strings.Contains(text, "Date,Hour,Source ID,Demand ORTB Endpoint ID,Country Code,Country,Bundle ID,Ad Requests,Ad Opportunities,Impressions,Source ID Revenue,Source ID Floor eCPM,Demand ORTB Endpoints Revenue,eCPM") {
 		t.Fatalf("expected csv header, got %q", text)
 	}
 	if !strings.Contains(text, "2026-03-06,10:00,11,77,USA,United States,com.example.app,10,10,3,0.012000,2.00,0.016000,4.00") {

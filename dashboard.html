@@ -445,7 +445,7 @@ textarea{resize:vertical;min-height:68px}
       <table>
         <thead id="mxHead"><tr>
           <th>Source ID</th><th>Demand ORTB Endpoint ID</th><th>Country Code</th><th>Country</th><th>Bundle ID</th>
-          <th>Ad Requests</th><th>Ad Opportunities</th><th>Impressions</th><th>Source ID Revenue</th><th>Source ID eCPM</th><th>Demand ORTB Endpoints Revenue</th><th>eCPM</th><th>Fill Rate (Ad Req)</th><th>Fill Rate (Ad Ops)</th>
+          <th>Ad Requests</th><th>Ad Opportunities</th><th>Impressions</th><th>Source ID Revenue</th><th>Source ID Floor eCPM</th><th>Demand ORTB Endpoints Revenue</th><th>eCPM</th><th>Fill Rate (Ad Req)</th><th>Fill Rate (Ad Ops)</th>
         </tr></thead>
         <tbody id="mxBody"><tr><td colspan="14" class="empty">No export data yet</td></tr></tbody>
       </table>
@@ -1268,7 +1268,7 @@ function metricsExportHeaders(groupBy){
   const headers=[];
   if(groupBy==='date'||groupBy==='hour') headers.push('Date');
   if(groupBy==='hour') headers.push('Hour');
-  headers.push('Source ID','Demand ORTB Endpoint ID','Country Code','Country','Bundle ID','Ad Requests','Ad Opportunities','Impressions','Source ID Revenue','Source ID eCPM','Demand ORTB Endpoints Revenue','eCPM','Fill Rate (Ad Req)','Fill Rate (Ad Ops)');
+  headers.push('Source ID','Demand ORTB Endpoint ID','Country Code','Country','Bundle ID','Ad Requests','Ad Opportunities','Impressions','Source ID Revenue','Source ID Floor eCPM','Demand ORTB Endpoints Revenue','eCPM','Fill Rate (Ad Req)','Fill Rate (Ad Ops)');
   return headers;
 }
 function metricsExportRowCells(row,groupBy){

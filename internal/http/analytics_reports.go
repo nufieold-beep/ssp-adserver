@@ -1228,7 +1228,7 @@ func renderMetricsExportCSV(rows []metricsExportRow, groupBy string) (string, er
 		"Ad Opportunities",
 		"Impressions",
 		"Source ID Revenue",
-		"Source ID eCPM",
+		"Source ID Floor eCPM",
 		"Demand ORTB Endpoints Revenue",
 		"eCPM",
 		"Fill Rate (Ad Req)",
