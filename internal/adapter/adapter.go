@@ -41,6 +41,21 @@ func resolveTimeout(timeoutMs int) time.Duration {
 	return time.Duration(timeoutMs) * time.Millisecond
 }
 
+// normalizeMargin interprets margin as either ratio (0.2) or percent (20).
+// Dashboard inputs are percentage-based, while config files may use ratios.
+func normalizeMargin(margin float64) float64 {
+	if margin <= 0 {
+		return 0
+	}
+	if margin > 1 {
+		margin = margin / 100.0
+	}
+	if margin >= 1 {
+		return 0.999
+	}
+	return margin
+}
+
 // BidResult contains bids from a single adapter plus metadata.
 type BidResult struct {
 	AdapterID string

@@ -31,7 +31,7 @@ func NewVASTAdapter(cfg *AdapterConfig) *VASTAdapter {
 	}
 	return &VASTAdapter{
 		id: cfg.ID, name: cfg.Name, tag: cfg.Endpoint,
-		cpm: cfg.Floor, margin: cfg.Margin,
+		cpm: cfg.Floor, margin: normalizeMargin(cfg.Margin),
 		gzipSupport: cfg.GZIPSupport,
 		client:      httputil.NewClient(t),
 	}

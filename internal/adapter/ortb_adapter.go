@@ -34,7 +34,7 @@ func NewORTBAdapter(cfg *AdapterConfig) *ORTBAdapter {
 	t := resolveTimeout(cfg.TimeoutMs)
 	return &ORTBAdapter{
 		id: cfg.ID, name: cfg.Name, endpoint: cfg.Endpoint,
-		floor: cfg.Floor, margin: cfg.Margin,
+		floor: cfg.Floor, margin: normalizeMargin(cfg.Margin),
 		gzipSupport:   cfg.GZIPSupport,
 		removePChain:  cfg.RemovePChain,
 		schainEnabled: cfg.SChainEnabled,
@@ -117,7 +117,7 @@ func (a *ORTBAdapter) RequestBids(ctx context.Context, req *openrtb.BidRequest) 
 		return nil, err
 	}
 
-	validatedBids := openrtb.ValidateBidResponse(&prebidResp, req)
+	validatedBids := openrtb.ValidateBidResponse(&prebidResp, outReq)
 	if len(validatedBids) == 0 {
 		return &BidResult{AdapterID: a.id, NoBid: true}, nil
 	}
@@ -137,6 +137,23 @@ func (a *ORTBAdapter) RequestBids(ctx context.Context, req *openrtb.BidRequest) 
 func (a *ORTBAdapter) applyEndpointConfig(req *openrtb.BidRequest) *openrtb.BidRequest {
 	// Shallow copy the request
 	clonedReq := *req
+
+	if len(req.Imp) > 0 {
+		clonedReq.Imp = make([]openrtb.Imp, len(req.Imp))
+		copy(clonedReq.Imp, req.Imp)
+
+		for i := range clonedReq.Imp {
+			floor := clonedReq.Imp[i].BidFloor
+			if a.floor > floor {
+				floor = a.floor
+			}
+			// Maintain supply net-floor when margin is configured.
+			if a.margin > 0 && floor > 0 {
+				floor = floor / (1 - a.margin)
+			}
+			clonedReq.Imp[i].BidFloor = floor
+		}
+	}
 
 	// Merge BAdv: combine request-level + endpoint-level blocked advertisers
 	if len(req.BAdv) > 0 || len(a.badv) > 0 {
