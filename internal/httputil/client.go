@@ -130,9 +130,15 @@ func SetORTBHeaders(httpReq *http.Request, requestID, userAgent, clientIP, ortbV
 		ortbVersion = "2.6"
 	}
 
+	httpReq.Header.Set("Accept", "application/json")
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("X-Openrtb-Version", ortbVersion)
 	httpReq.Header.Set("X-Request-ID", requestID)
+
+	deviceUA := strings.TrimSpace(userAgent)
+	if deviceUA != "" {
+		httpReq.Header.Set("X-Device-User-Agent", deviceUA)
+	}
 
 	if strings.TrimSpace(userAgent) == "" {
 		userAgent = "ssp-ortb/" + ortbVersion
@@ -141,6 +147,7 @@ func SetORTBHeaders(httpReq *http.Request, requestID, userAgent, clientIP, ortbV
 
 	if ip := firstForwardedIP(clientIP); ip != "" {
 		httpReq.Header.Set("X-Forwarded-For", ip)
+		httpReq.Header.Set("X-Device-IP", ip)
 	}
 
 	// Ensure Host header matches the demand endpoint authority.

@@ -93,7 +93,8 @@ var defaultSChain = &Source{
 	},
 }
 
-// BuildFromHTTP constructs a CTV/in-app video BidRequest from query params.
+// BuildFromHTTP constructs a CTV/in-app video BidRequest from query params
+// with common app/CTV HTTP headers as fallback values.
 func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 	queries := c.Queries()
 
@@ -107,47 +108,40 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 		skippable = 1
 	}
 
-	tagID := queryMap(queries, "sid", "tagid")
+	tagID := requestValue(c, queries, []string{"sid", "tagid"}, "X-Tag-ID", "Tag-ID", "X-Slot-ID", "Slot-ID", "X-Supply-ID", "Supply-ID")
 	if tagID == "" {
 		tagID = c.Params("tag")
 	}
 
-	deviceType := queryIntMap(queries, 3, "device_type", "devicetype") // CTV default
-	language := queryMapDefault(queries, "en", "ct_lang", "lang")
+	deviceType := requestDeviceTypeValue(c, queries, 3) // CTV default
+	language := requestLanguageValue(c, queries, "en")
 
-	dnt := queryIntMap(queries, 0, "dnt")
-	lmt := queryIntMap(queries, 0, "lmt")
-	ip := queryMap(queries, "ip", "uip")
-	if ip == "" {
-		ip = c.Get("X-Forwarded-For")
-		if ip == "" {
-			ip = c.Get("X-Real-IP")
-		}
-		if strings.Contains(ip, ",") {
-			ip = strings.TrimSpace(strings.SplitN(ip, ",", 2)[0])
-		}
-	}
+	dnt := requestIntValue(c, queries, 0, []string{"dnt"}, "DNT", "X-Device-DNT")
+	lmt := requestIntValue(c, queries, 0, []string{"lmt"}, "X-Device-LMT", "LMT")
+	ip := requestValue(c, queries, []string{"ip", "uip"}, "X-Device-IP", "X-Forwarded-For", "X-Real-IP", "CF-Connecting-IP", "True-Client-IP")
 	if ip == "" {
 		ip = c.IP()
 	}
-	ua := queryMap(queries, "ua")
-	if ua == "" {
-		ua = c.Get("User-Agent")
+	if strings.Contains(ip, ",") {
+		ip = strings.TrimSpace(strings.SplitN(ip, ",", 2)[0])
 	}
-	ifa := queryMap(queries, "ifa")
-	bundle := queryMap(queries, "app_bundle", "bundle")
+	ua := requestValue(c, queries, []string{"ua"}, "X-Device-User-Agent", "X-Original-User-Agent", "User-Agent")
+	ifa := requestValue(c, queries, []string{"ifa"}, "X-Device-IFA", "X-IFA", "IFA")
+	bundle := requestValue(c, queries, []string{"app_bundle", "bundle"}, "X-App-Bundle", "App-Bundle", "X-Bundle-ID", "Bundle-ID", "Bundle")
 	if bundle == "" && tagID != "" {
 		bundle = "supply." + normalizeBundleToken(tagID)
 	}
 	if bundle == "" {
 		bundle = "app.unknown"
 	}
-	deviceOS := queryMap(queries, "os")
-	deviceMake := queryMap(queries, "device_make")
+	deviceOS := requestValue(c, queries, []string{"os"}, "X-Device-OS", "Device-OS")
+	deviceMake := requestValue(c, queries, []string{"device_make"}, "X-Device-Make", "Device-Make")
+	deviceModel := requestValue(c, queries, []string{"device_model"}, "X-Device-Model", "Device-Model")
+	deviceOSV := requestValue(c, queries, []string{"osv"}, "X-Device-OSV", "X-Device-OS-Version", "Device-OSV", "Device-OS-Version")
 
 	reqID := uuid.NewString()
 
-	country := queryMap(queries, "country_code", "country")
+	country := requestValue(c, queries, []string{"country_code", "country"}, "X-Country-Code", "Country-Code", "CF-IPCountry")
 	if len(country) == 2 {
 		country = ToAlpha3(country)
 	}
@@ -193,10 +187,10 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 		},
 		App: &App{
 			ID:        bundle,
-			Name:      queryMap(queries, "app_name"),
+			Name:      requestValue(c, queries, []string{"app_name"}, "X-App-Name", "App-Name"),
 			Bundle:    bundle,
-			StoreURL:  queryMap(queries, "app_store_url", "storeurl"),
-			Ver:       queryMap(queries, "app_ver"),
+			StoreURL:  requestValue(c, queries, []string{"app_store_url", "storeurl"}, "X-App-Store-URL", "App-Store-URL", "X-Store-URL"),
+			Ver:       requestValue(c, queries, []string{"app_ver"}, "X-App-Version", "App-Version"),
 			Publisher: &Publisher{ID: tagID},
 			Content:   &Content{Language: language, LiveStream: int8Ptr(1)},
 		},
@@ -204,11 +198,11 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 			DNT:        int8Ptr(dnt),
 			UA:         ua,
 			IP:         ip,
-			Geo:        &Geo{Country: country, Region: queryMap(queries, "region"), City: queryMap(queries, "city"), ZIP: queryMap(queries, "zip"), Type: adcom1.LocationType(2)},
+			Geo:        &Geo{Country: country, Region: requestValue(c, queries, []string{"region"}, "X-Region", "Region"), City: requestValue(c, queries, []string{"city"}, "X-City", "City"), ZIP: requestValue(c, queries, []string{"zip"}, "X-Postal-Code", "Postal-Code", "X-ZIP", "ZIP"), Type: adcom1.LocationType(2)},
 			Make:       deviceMake,
-			Model:      queryMap(queries, "device_model"),
+			Model:      deviceModel,
 			OS:         deviceOS,
-			OSV:        queryMap(queries, "osv"),
+			OSV:        deviceOSV,
 			DeviceType: adcom1.DeviceType(deviceType),
 			IFA:        ifa,
 			Lmt:        int8Ptr(lmt),
@@ -232,7 +226,7 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 		req.User = &User{ID: ifa}
 	}
 
-	if ct := queryMap(queries, "connectiontype"); ct != "" {
+	if ct := requestValue(c, queries, []string{"connectiontype"}, "X-Connection-Type", "Connection-Type"); ct != "" {
 		if parsed, err := strconv.Atoi(ct); err == nil {
 			connType := adcom1.ConnectionType(parsed)
 			req.Device.ConnectionType = &connType
@@ -249,15 +243,15 @@ func BuildFromHTTP(c *fiber.Ctx) BidRequest {
 		req.App.Content.Cat = cats
 	}
 
-	if coppa := queryMap(queries, "coppa"); coppa != "" {
+	if coppa := requestValue(c, queries, []string{"coppa"}, "X-COPPA", "COPPA"); coppa != "" {
 		if parsed, err := strconv.Atoi(coppa); err == nil {
 			req.Regs.COPPA = int8(parsed)
 		}
 	}
-	if usPriv := queryMap(queries, "us_privacy"); usPriv != "" {
+	if usPriv := requestValue(c, queries, []string{"us_privacy"}, "X-US-Privacy", "US-Privacy"); usPriv != "" {
 		req.Regs.USPrivacy = usPriv
 	}
-	if gdpr := queryMap(queries, "gdpr"); gdpr != "" {
+	if gdpr := requestValue(c, queries, []string{"gdpr"}, "X-GDPR", "GDPR"); gdpr != "" {
 		if parsed, err := strconv.Atoi(gdpr); err == nil {
 			gdprFlag := int8(parsed)
 			req.Regs.GDPR = &gdprFlag
@@ -283,6 +277,95 @@ func normalizeBundleToken(v string) string {
 	}
 	return v
 }
+
+func requestValue(c *fiber.Ctx, queries map[string]string, queryKeys []string, headerKeys ...string) string {
+	if value := strings.TrimSpace(queryMap(queries, queryKeys...)); value != "" {
+		return value
+	}
+	return headerValue(c, headerKeys...)
+}
+
+func requestIntValue(c *fiber.Ctx, queries map[string]string, def int, queryKeys []string, headerKeys ...string) int {
+	if value, ok := parseIntValue(queryMap(queries, queryKeys...)); ok {
+		return value
+	}
+	for _, key := range headerKeys {
+		if value, ok := parseIntValue(headerValue(c, key)); ok {
+			return value
+		}
+	}
+	return def
+}
+
+func requestDeviceTypeValue(c *fiber.Ctx, queries map[string]string, def int) int {
+	if value, ok := parseDeviceTypeValue(queryMap(queries, "device_type", "devicetype")); ok {
+		return value
+	}
+	for _, key := range []string{"X-Device-Type", "Device-Type", "X-Inventory-Device-Type"} {
+		if value, ok := parseDeviceTypeValue(headerValue(c, key)); ok {
+			return value
+		}
+	}
+	return def
+}
+
+func requestLanguageValue(c *fiber.Ctx, queries map[string]string, def string) string {
+	if value := requestValue(c, queries, []string{"ct_lang", "lang"}, "X-Device-Language", "Device-Language", "Accept-Language", "Content-Language"); value != "" {
+		return normalizeLanguageValue(value)
+	}
+	return def
+}
+
+func headerValue(c *fiber.Ctx, keys ...string) string {
+	if c == nil {
+		return ""
+	}
+	for _, key := range keys {
+		if value := strings.TrimSpace(c.Get(key)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func parseIntValue(raw string) (int, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, false
+	}
+	parsed, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, false
+	}
+	return parsed, true
+}
+
+func parseDeviceTypeValue(raw string) (int, bool) {
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	switch raw {
+	case "ctv", "connectedtv", "connected-tv", "connected_tv", "smarttv", "smart-tv", "smart_tv", "tv":
+		return 3, true
+	case "stb", "settopbox", "set-top-box", "set_top_box":
+		return 7, true
+	case "mobile", "phone", "smartphone":
+		return 4, true
+	case "tablet":
+		return 5, true
+	}
+	return parseIntValue(raw)
+}
+
+func normalizeLanguageValue(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if idx := strings.IndexAny(raw, ",;"); idx >= 0 {
+		raw = raw[:idx]
+	}
+	return strings.TrimSpace(raw)
+}
+
 func queryMap(queries map[string]string, keys ...string) string {
 	for _, key := range keys {
 		if value := queries[key]; value != "" {
