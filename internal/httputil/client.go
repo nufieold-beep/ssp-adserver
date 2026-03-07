@@ -123,14 +123,19 @@ func NewClient(timeout time.Duration) *http.Client {
 	}
 }
 
-// SetORTBHeaders sets the standard OpenRTB 2.6 request headers.
-func SetORTBHeaders(httpReq *http.Request, requestID, userAgent, clientIP string) {
+// SetORTBHeaders sets the standard OpenRTB request headers.
+func SetORTBHeaders(httpReq *http.Request, requestID, userAgent, clientIP, ortbVersion string) {
+	ortbVersion = strings.TrimSpace(ortbVersion)
+	if ortbVersion == "" {
+		ortbVersion = "2.6"
+	}
+
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("X-Openrtb-Version", "2.6")
+	httpReq.Header.Set("X-Openrtb-Version", ortbVersion)
 	httpReq.Header.Set("X-Request-ID", requestID)
 
 	if strings.TrimSpace(userAgent) == "" {
-		userAgent = "ssp-ortb/2.6"
+		userAgent = "ssp-ortb/" + ortbVersion
 	}
 	httpReq.Header.Set("User-Agent", userAgent)
 

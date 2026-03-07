@@ -41,6 +41,14 @@ func resolveTimeout(timeoutMs int) time.Duration {
 	return time.Duration(timeoutMs) * time.Millisecond
 }
 
+func normalizeORTBVersion(version string) string {
+	version = strings.TrimSpace(version)
+	if version == "2.5" {
+		return "2.5"
+	}
+	return "2.6"
+}
+
 // normalizeMargin interprets margin as either ratio (0.2) or percent (20).
 // Dashboard inputs are percentage-based, while config files may use ratios.
 func normalizeMargin(margin float64) float64 {
@@ -71,6 +79,7 @@ type AdapterConfig struct {
 	ID            string      `yaml:"id" json:"id"`
 	Name          string      `yaml:"name" json:"name"`
 	Type          AdapterType `yaml:"type" json:"type"`
+	ORTBVersion   string      `yaml:"ortb_version" json:"ortb_version"`
 	Endpoint      string      `yaml:"endpoint" json:"endpoint"`
 	TimeoutMs     int         `yaml:"timeout_ms" json:"timeout_ms"`
 	Floor         float64     `yaml:"floor" json:"floor"`

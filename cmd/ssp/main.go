@@ -65,6 +65,7 @@ func main() {
 			ID:          ac.ID,
 			Name:        ac.Name,
 			Type:        adapter.AdapterType(ac.Type),
+			ORTBVersion: ac.ORTBVersion,
 			Endpoint:    ac.Endpoint,
 			TimeoutMs:   ac.TimeoutMs,
 			Floor:       ac.Floor,

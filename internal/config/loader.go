@@ -43,6 +43,7 @@ type AdapterConfig struct {
 	ID          string   `yaml:"id" json:"id"`
 	Name        string   `yaml:"name" json:"name"`
 	Type        string   `yaml:"type" json:"type"` // "ortb" or "vast"
+	ORTBVersion string   `yaml:"ortb_version" json:"ortb_version"`
 	Endpoint    string   `yaml:"endpoint" json:"endpoint"`
 	TimeoutMs   int      `yaml:"timeout_ms" json:"timeout_ms"`
 	Floor       float64  `yaml:"floor" json:"floor"`

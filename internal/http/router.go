@@ -1210,8 +1210,9 @@ func buildDemandEndpointAdapterConfig(adapterID string, endpoint *DemandEndpoint
 
 	return &adapter.AdapterConfig{
 		ID: adapterID, Name: endpoint.Name,
-		Type:     normalizeDemandIntegration(endpoint.Integration),
-		Endpoint: endpoint.URL, TimeoutMs: normalizeDemandTimeoutMs(endpoint.Timeout),
+		Type:        normalizeDemandIntegration(endpoint.Integration),
+		ORTBVersion: endpoint.OrtbVersion,
+		Endpoint:    endpoint.URL, TimeoutMs: normalizeDemandTimeoutMs(endpoint.Timeout),
 		Floor: endpoint.Floor, Margin: endpoint.Margin,
 		QPSLimit: endpoint.QPS, Status: endpoint.Status,
 		GZIPSupport:   endpoint.GZIPSupport,

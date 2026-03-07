@@ -20,6 +20,7 @@ type ORTBAdapter struct {
 	id            string
 	name          string
 	endpoint      string
+	ortbVersion   string
 	client        *http.Client
 	floor         float64
 	margin        float64
@@ -34,7 +35,8 @@ func NewORTBAdapter(cfg *AdapterConfig) *ORTBAdapter {
 	t := resolveTimeout(cfg.TimeoutMs)
 	return &ORTBAdapter{
 		id: cfg.ID, name: cfg.Name, endpoint: cfg.Endpoint,
-		floor: cfg.Floor, margin: normalizeMargin(cfg.Margin),
+		ortbVersion: normalizeORTBVersion(cfg.ORTBVersion),
+		floor:       cfg.Floor, margin: normalizeMargin(cfg.Margin),
 		gzipSupport:   cfg.GZIPSupport,
 		removePChain:  cfg.RemovePChain,
 		schainEnabled: cfg.SChainEnabled,
@@ -79,7 +81,7 @@ func (a *ORTBAdapter) RequestBids(ctx context.Context, req *openrtb.BidRequest) 
 		ua = outReq.Device.UA
 		ip = outReq.Device.IP
 	}
-	httputil.SetORTBHeaders(httpReq, outReq.ID, ua, ip)
+	httputil.SetORTBHeaders(httpReq, outReq.ID, ua, ip, a.ortbVersion)
 	if a.gzipSupport {
 		httpReq.Header.Set("Content-Encoding", "gzip")
 		httpReq.Header.Set("Accept-Encoding", "gzip")
@@ -152,6 +154,12 @@ func (a *ORTBAdapter) applyEndpointConfig(req *openrtb.BidRequest) *openrtb.BidR
 				floor = floor / (1 - a.margin)
 			}
 			clonedReq.Imp[i].BidFloor = floor
+
+			if a.ortbVersion == "2.5" && clonedReq.Imp[i].Video != nil {
+				videoCopy := *clonedReq.Imp[i].Video
+				videoCopy.Plcmt = 0
+				clonedReq.Imp[i].Video = &videoCopy
+			}
 		}
 	}
 
@@ -170,7 +178,29 @@ func (a *ORTBAdapter) applyEndpointConfig(req *openrtb.BidRequest) *openrtb.BidR
 		clonedReq.Source = nil
 	}
 
+	if a.ortbVersion == "2.5" {
+		downgradeRequestToORTB25(&clonedReq)
+	}
+
 	return &clonedReq
+}
+
+func downgradeRequestToORTB25(req *openrtb.BidRequest) {
+	if req == nil {
+		return
+	}
+
+	if req.Device != nil && req.Device.SUA != nil {
+		deviceCopy := *req.Device
+		deviceCopy.SUA = nil
+		req.Device = &deviceCopy
+	}
+
+	if req.Regs != nil && len(req.Regs.GPPSID) > 0 {
+		regsCopy := *req.Regs
+		regsCopy.GPPSID = nil
+		req.Regs = &regsCopy
+	}
 }
 
 func sanitizeStringList(in []string) []string {
