@@ -215,7 +215,7 @@ textarea{resize:vertical;min-height:68px}
     <div class="card">
       <div class="card-header"><h3>Demand Partners</h3></div>
       <div class="card-body table-wrap">
-        <table><thead><tr><th>ADomain</th><th>Impressions</th><th>Revenue</th><th>eCPM</th></tr></thead>
+        <table><thead><tr><th>Demand</th><th>Filled Opps</th><th>Revenue</th><th>eCPM</th></tr></thead>
           <tbody id="dashDemandBody"><tr><td colspan="4" class="empty">No data</td></tr></tbody>
         </table>
       </div>
@@ -275,7 +275,7 @@ textarea{resize:vertical;min-height:68px}
   <div class="card">
     <div class="card-header"><h3>Recent Bid Results</h3></div>
     <div class="card-body table-wrap">
-      <table><thead><tr><th>ADomain</th><th>Demand ID</th><th>Creative ID</th><th>Impressions</th><th>Revenue</th><th>eCPM</th><th>Gross CPM</th></tr></thead>
+      <table><thead><tr><th>ADomain</th><th>Demand ID</th><th>Creative ID</th><th>Filled Opps</th><th>Revenue</th><th>eCPM</th><th>Gross CPM</th></tr></thead>
         <tbody id="bsTableBody"><tr><td colspan="7" class="empty">Loading...</td></tr></tbody>
       </table>
     </div>
@@ -814,6 +814,7 @@ function apiURL(path){
 }
 let API_BASE = normalizeApiBase(localStorage.getItem('viadsmedia_api_base') || window.location.origin);
 let API_KEY = localStorage.getItem('viadsmedia_api_key') || '';
+const AUTH_STORAGE_KEY = 'viadsmedia_auth';
 const SD = '/api/v1/supply-demand';
 const STATUS_MAP = {0:'Inactive',1:'Active',2:'Paused'};
 const STATUS_CLS = {0:'badge-inactive',1:'badge-active',2:'badge-paused'};
@@ -833,7 +834,7 @@ async function api(path, opts = {}) {
     if (res.status === 204) return null;
     let data = {};
     try { data = await res.json(); } catch(_) { data = {}; }
-    if (res.status === 401 && sessionStorage.getItem('viadsmedia_auth') === '1') {
+    if (res.status === 401 && hasStoredAuth()) {
       promptReLogin(data.error || 'Session expired. Please sign in again.');
     }
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
@@ -861,6 +862,25 @@ function toast(msg,type='success'){const el=document.createElement('div');el.cla
 function openModal(id){$(id).classList.add('active')}
 function closeModal(id){$(id).classList.remove('active')}
 function pct(a,b){return b>0?((a/b)*100).toFixed(1)+'%':'0%'}
+function hasStoredAuth(){
+  const persisted=localStorage.getItem(AUTH_STORAGE_KEY);
+  if(persisted==='1') return true;
+  const legacySession=sessionStorage.getItem(AUTH_STORAGE_KEY);
+  if(legacySession==='1'){
+    localStorage.setItem(AUTH_STORAGE_KEY,'1');
+    sessionStorage.removeItem(AUTH_STORAGE_KEY);
+    return true;
+  }
+  return false;
+}
+function storeAuthState(){
+  localStorage.setItem(AUTH_STORAGE_KEY,'1');
+  sessionStorage.removeItem(AUTH_STORAGE_KEY);
+}
+function clearAuthState(){
+  localStorage.removeItem(AUTH_STORAGE_KEY);
+  sessionStorage.removeItem(AUTH_STORAGE_KEY);
+}
 function showAppMain(){
   $('loginOverlay').style.display='none';
   $('appMain').style.display='flex';
@@ -872,7 +892,7 @@ function showLoginOverlay(msg=''){
   $('loginError').style.display=msg?'block':'none';
 }
 function promptReLogin(msg){
-  sessionStorage.removeItem('viadsmedia_auth');
+  clearAuthState();
   showLoginOverlay(msg||'Session expired. Please sign in again.');
 }
 
@@ -931,21 +951,23 @@ async function loadDashboard() {
     const [overview, health, demand, decisions] = await Promise.all([
       api('/api/v1/analytics/overview'),
       api('/api/v1/analytics/reports/delivery-health'),
-      api('/api/v1/analytics/reports/demand'),
+      api('/api/v1/analytics/reports/demand-totals'),
       api('/api/v1/analytics/reports/decisions?limit=10')
     ]);
     const o = overview;
-    const reqs=o.ad_requests||0, imps=o.impressions||0, compl=o.completions||0, spend=o.total_spend||0;
+    const reqs=o.ad_requests||0, imps=o.impressions||0, compl=o.completions||0;
+    const filled=o.filled_opportunities||o.bid_wins||0;
+    const spend=o.total_revenue??o.total_spend??0;
     const wins=o.bid_wins||0, losses=o.bid_losses||0;
 
     $('statReqs').textContent=fmtNum(reqs);
     $('statImps').textContent=fmtNum(imps);
-    $('statFill').textContent=pct(imps,reqs);
-    $('statFillSub').textContent=`${fmtNum(imps)} / ${fmtNum(reqs)}`;
+    $('statFill').textContent=Number(o.ad_request_fill_rate||0).toFixed(1)+'%';
+    $('statFillSub').textContent=`${fmtNum(filled)} filled / ${fmtNum(reqs)} reqs | Opp fill ${Number(o.opportunity_fill_rate||0).toFixed(1)}%`;
     $('statRev').textContent=fmtMoney(spend);
     $('statVtr').textContent=pct(compl,imps);
     $('statVtrSub').textContent=`${fmtNum(compl)} / ${fmtNum(imps)}`;
-    $('statEcpm').textContent=imps>0?'$'+((spend/imps)*1000).toFixed(2):'$0.00';
+    $('statEcpm').textContent='$'+Number(o.ecpm||0).toFixed(2);
     $('statWinRate').textContent=pct(wins,wins+losses);
     $('statLatency').textContent=(o.avg_bid_latency_ms||0).toFixed(0)+'ms';
     $('statErrors').textContent=fmtNum(o.errors);
@@ -965,7 +987,7 @@ async function loadDashboard() {
     // Demand partners
     const rows = (demand||[]).slice(0,5);
     $('dashDemandBody').innerHTML = rows.length ? rows.map(r=>`<tr>
-      <td>${esc(r.adomain||'—')}</td><td>${fmtNum(r.impressions||0)}</td>
+      <td>${esc(r.demand_name||r.demand_id||'—')}</td><td>${fmtNum(r.filled_opportunities||r.impressions||0)}</td>
       <td>${fmtMoney(r.revenue||0)}</td><td>$${Number(r.ecpm||0).toFixed(2)}</td>
     </tr>`).join('') : '<tr><td colspan="4" class="empty">No demand data yet</td></tr>';
 
@@ -992,13 +1014,14 @@ async function loadLiveTraffic() {
       api('/api/v1/admin/campaigns')
     ]);
     const o=overview;
-    const reqs=o.ad_requests||0, imps=o.impressions||0, compl=o.completions||0, spend=o.total_spend||0;
+    const reqs=o.ad_requests||0, imps=o.impressions||0, compl=o.completions||0;
+    const spend=o.total_revenue??o.total_spend??0;
     $('ltReqs').textContent=fmtNum(reqs);
     $('ltImps').textContent=fmtNum(imps);
-    $('ltFill').textContent=pct(imps,reqs);
+    $('ltFill').textContent=Number(o.ad_request_fill_rate||0).toFixed(1)+'%';
     $('ltRev').textContent=fmtMoney(spend);
     $('ltVtr').textContent=pct(compl,imps);
-    $('ltEcpm').textContent=imps>0?'$'+((spend/imps)*1000).toFixed(2):'$0.00';
+    $('ltEcpm').textContent='$'+Number(o.ecpm||0).toFixed(2);
 
     $('ltCampBody').innerHTML = (camps||[]).length ? camps.map(c=>`<tr>
       <td><strong>${esc(c.name)}</strong></td><td>${badge(c.status)}</td>
@@ -1029,7 +1052,7 @@ async function loadBidStream() {
 
     $('bsTableBody').innerHTML = (demand||[]).length ? demand.map(r=>`<tr>
       <td>${esc(r.adomain||'—')}</td><td>${esc(r.demand_id||'—')}</td><td>${esc(r.creative_id||'—')}</td>
-      <td>${fmtNum(r.impressions||0)}</td><td>${fmtMoney(r.revenue||0)}</td>
+      <td>${fmtNum(r.filled_opportunities||r.impressions||0)}</td><td>${fmtMoney(r.revenue||0)}</td>
       <td>$${Number(r.ecpm||0).toFixed(2)}</td><td>$${Number(r.gross_cpm||0).toFixed(2)}</td>
     </tr>`).join('') : '<tr><td colspan="7" class="empty">No bid data</td></tr>';
   } catch(e) {}
@@ -1045,14 +1068,13 @@ async function loadVastDelivery() {
       api('/api/v1/analytics/overview'),
       api('/api/v1/analytics/reports/vast-errors')
     ]);
-    const h=health, wins=overview.bid_wins||0, noBids=overview.no_bids||0;
-    const auctionOutcomes=wins+noBids;
+    const h=health;
     $('vdStartRate').textContent=(h.start_rate||0).toFixed(1)+'%';
     $('vdVtr').textContent=(h.vtr||0).toFixed(1)+'%';
     $('vdSkipRate').textContent=(h.skip_rate||0).toFixed(1)+'%';
     $('vdErrorRate').textContent=(h.error_rate||0).toFixed(1)+'%';
-    $('vdFillRate').textContent=pct(wins,auctionOutcomes);
-    $('vdNoBidRate').textContent=pct(noBids,auctionOutcomes);
+    $('vdFillRate').textContent=Number(overview.opportunity_fill_rate||0).toFixed(1)+'%';
+    $('vdNoBidRate').textContent=Number(overview.no_bid_rate||0).toFixed(1)+'%';
 
     buildFunnel('vdFunnel', [
       {label:'Impressions',value:h.impressions||0},{label:'Starts',value:h.starts||0},
@@ -1563,7 +1585,7 @@ function doLogin(){
     if(!r.ok) throw new Error('fail');
     return r.json();
   }).then(()=>{
-    sessionStorage.setItem('viadsmedia_auth','1');
+    storeAuthState();
     showAppMain();
     loadDashboard();
   }).catch(()=>{
@@ -1572,7 +1594,7 @@ function doLogin(){
 }
 function doLogout(){
   fetch(apiURL('/api/v1/auth/logout'),{method:'POST',credentials:'same-origin'}).catch(()=>{});
-  sessionStorage.removeItem('viadsmedia_auth');
+  clearAuthState();
   showLoginOverlay();
   $('loginUser').value='';
   $('loginPass').value='';
@@ -1616,18 +1638,18 @@ async function initializeDashboardAuth(){
     if(!res.ok) throw new Error(data.error||`HTTP ${res.status}`);
     if(data.authenticated||data.required===false){
       showAppMain();
-      sessionStorage.setItem('viadsmedia_auth','1');
+      storeAuthState();
       loadDashboard();
       return;
     }
   }catch(e){
-    if(sessionStorage.getItem('viadsmedia_auth')==='1'){
+    if(hasStoredAuth()){
       showAppMain();
       loadDashboard();
       return;
     }
   }
-  sessionStorage.removeItem('viadsmedia_auth');
+  clearAuthState();
   showLoginOverlay();
 }
 // Enter key on login fields

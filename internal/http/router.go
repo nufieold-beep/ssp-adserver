@@ -149,6 +149,7 @@ type AdDecision struct {
 	ADomain    string    `json:"adomain"`
 	ADSource   string    `json:"ad_source"`
 	BidPrice   float64   `json:"bid_price"`
+	GrossPrice float64   `json:"gross_price"`
 	NetPrice   float64   `json:"net_price"`
 	Seat       string    `json:"seat"`
 	AdmType    string    `json:"adm_type"`
@@ -202,32 +203,41 @@ type store struct {
 
 	adDecisions []AdDecision
 
+	analyticsTotals       analyticsAccumulator
+	analyticsDemandTotals map[string]analyticsAccumulator
+	analyticsSupplyTotals map[int]analyticsAccumulator
+	analyticsBundleTotals map[string]analyticsAccumulator
+
 	budgetDayKey   string
 	frequencyByKey map[string]int
 
-	dashboardUser     string
-	dashboardPass     string
-	dashboardSessions map[string]time.Time
-	statePath         string
-	stateGeneration   atomic.Uint64
+	dashboardUser      string
+	dashboardPass      string
+	dashboardSessions  map[string]time.Time
+	statePath          string
+	stateGeneration    atomic.Uint64
+	statePersistMu     sync.Mutex
+	statePersistDirty  bool
+	statePersistQueued bool
 }
 
 type supplyDemandState struct {
-	Version              int              `json:"version"`
-	NextCampaignID       int              `json:"next_campaign_id"`
-	NextAdvertiserID     int              `json:"next_advertiser_id"`
-	NextRuleID           int              `json:"next_rule_id"`
-	NextSupplyTagID      int              `json:"next_supply_tag_id"`
-	NextDemandEndpointID int              `json:"next_demand_endpoint_id"`
-	NextDemandVastTagID  int              `json:"next_demand_vast_tag_id"`
-	NextMappingID        int              `json:"next_mapping_id"`
-	Campaigns            []Campaign       `json:"campaigns"`
-	Advertisers          []Advertiser     `json:"advertisers"`
-	TargetingRules       []TargetingRule  `json:"targeting_rules"`
-	SupplyTags           []SupplyTag      `json:"supply_tags"`
-	DemandEndpoints      []DemandEndpoint `json:"demand_endpoints"`
-	DemandVastTags       []DemandVastTag  `json:"demand_vast_tags"`
-	Mappings             []SDMapping      `json:"mappings"`
+	Version              int                     `json:"version"`
+	NextCampaignID       int                     `json:"next_campaign_id"`
+	NextAdvertiserID     int                     `json:"next_advertiser_id"`
+	NextRuleID           int                     `json:"next_rule_id"`
+	NextSupplyTagID      int                     `json:"next_supply_tag_id"`
+	NextDemandEndpointID int                     `json:"next_demand_endpoint_id"`
+	NextDemandVastTagID  int                     `json:"next_demand_vast_tag_id"`
+	NextMappingID        int                     `json:"next_mapping_id"`
+	Campaigns            []Campaign              `json:"campaigns"`
+	Advertisers          []Advertiser            `json:"advertisers"`
+	TargetingRules       []TargetingRule         `json:"targeting_rules"`
+	SupplyTags           []SupplyTag             `json:"supply_tags"`
+	DemandEndpoints      []DemandEndpoint        `json:"demand_endpoints"`
+	DemandVastTags       []DemandVastTag         `json:"demand_vast_tags"`
+	Mappings             []SDMapping             `json:"mappings"`
+	Analytics            persistedAnalyticsState `json:"analytics,omitempty"`
 }
 
 type pendingSupplyDemandStateWrite struct {
@@ -264,6 +274,9 @@ func newStore() *store {
 		activeCampaignByDomain: make(map[string]*Campaign),
 		targetingRules:         make(map[int]*TargetingRule),
 		nextRuleID:             1,
+		analyticsDemandTotals:  make(map[string]analyticsAccumulator),
+		analyticsSupplyTotals:  make(map[int]analyticsAccumulator),
+		analyticsBundleTotals:  make(map[string]analyticsAccumulator),
 		budgetDayKey:           time.Now().UTC().Format("2006-01-02"),
 		frequencyByKey:         make(map[string]int),
 		dashboardUser:          "admin",
@@ -477,6 +490,7 @@ func (s *store) loadSupplyDemandState(statePath string) error {
 	s.nextMappingID = maxInt(1, snapshot.NextMappingID, maxMappingID+1)
 	s.budgetDayKey = time.Now().UTC().Format("2006-01-02")
 	s.frequencyByKey = make(map[string]int)
+	s.loadPersistedAnalyticsLocked(snapshot.Analytics)
 
 	s.rebuildSupplyIndexLocked()
 	s.rebuildMappingIndexLocked()
@@ -492,7 +506,7 @@ func (s *store) prepareSupplyDemandStateWriteLocked() *pendingSupplyDemandStateW
 	}
 
 	generation := s.stateGeneration.Add(1)
-	snapshot := supplyDemandState{Version: 1}
+	snapshot := supplyDemandState{Version: 2}
 	s.snapshotSupplyDemandStateLocked(&snapshot)
 
 	return &pendingSupplyDemandStateWrite{
@@ -513,7 +527,7 @@ func (s *store) snapshotSupplyDemandState() *pendingSupplyDemandStateWrite {
 	s.deliveryMu.RLock()
 	defer s.deliveryMu.RUnlock()
 
-	snapshot := supplyDemandState{Version: 1}
+	snapshot := supplyDemandState{Version: 2}
 	s.snapshotSupplyDemandStateLocked(&snapshot)
 
 	return &pendingSupplyDemandStateWrite{
@@ -530,6 +544,42 @@ func (s *store) writeSupplyDemandState() error {
 		return nil
 	}
 	return write.Persist()
+}
+
+func (s *store) scheduleDeferredStatePersist() {
+	if s == nil || strings.TrimSpace(s.statePath) == "" {
+		return
+	}
+
+	s.statePersistMu.Lock()
+	s.statePersistDirty = true
+	if s.statePersistQueued {
+		s.statePersistMu.Unlock()
+		return
+	}
+	s.statePersistQueued = true
+	s.statePersistMu.Unlock()
+
+	go func() {
+		time.Sleep(2 * time.Second)
+		for {
+			s.statePersistMu.Lock()
+			s.statePersistDirty = false
+			s.statePersistMu.Unlock()
+
+			if err := s.writeSupplyDemandState(); err != nil {
+				log.Printf("Warning: failed to persist runtime analytics state (%s): %v", s.statePath, err)
+			}
+
+			s.statePersistMu.Lock()
+			if !s.statePersistDirty {
+				s.statePersistQueued = false
+				s.statePersistMu.Unlock()
+				return
+			}
+			s.statePersistMu.Unlock()
+		}
+	}()
 }
 
 func (w *pendingSupplyDemandStateWrite) Persist() error {
@@ -636,6 +686,8 @@ func (s *store) snapshotSupplyDemandStateLocked(dst *supplyDemandState) {
 		dst.Mappings = append(dst.Mappings, *mapping)
 	}
 	sort.Slice(dst.Mappings, func(i, j int) bool { return dst.Mappings[i].ID < dst.Mappings[j].ID })
+
+	dst.Analytics = s.snapshotPersistedAnalyticsLocked()
 }
 
 func (s *store) registerPersistedDemandAdapters(reg *adapter.Registry) {
@@ -1225,10 +1277,12 @@ func (s *store) recordAdDecision(req *openrtb.BidRequest, winner *openrtb.Bid, w
 	creativeID := ""
 	seat := ""
 	bidPrice := 0.0
+	grossPrice := 0.0
 	if winner != nil {
 		creativeID = winner.CrID
 		seat = winner.Seat
 		bidPrice = winner.Price
+		grossPrice = winPrice
 	}
 
 	s.decisionMu.Lock()
@@ -1236,7 +1290,7 @@ func (s *store) recordAdDecision(req *openrtb.BidRequest, winner *openrtb.Bid, w
 		Time: time.Now(), CampaignID: campaignID, Campaign: campaignName,
 		CreativeID: creativeID, SupplyID: supplyID, Source: source,
 		ADomain: adomain, Seat: seat,
-		BidPrice: bidPrice, NetPrice: netPrice,
+		BidPrice: bidPrice, GrossPrice: grossPrice, NetPrice: netPrice,
 		AdmType: "vast", AppBundle: appBundle, RawBundle: rawBundle, Country: country, DeviceType: devType,
 		DemandEp: demandSource, Delivery: deliveryStatus,
 	})
@@ -1244,6 +1298,24 @@ func (s *store) recordAdDecision(req *openrtb.BidRequest, winner *openrtb.Bid, w
 		s.adDecisions = s.adDecisions[len(s.adDecisions)-500:]
 	}
 	s.decisionMu.Unlock()
+
+	s.mu.Lock()
+	s.recordPersistedAnalyticsLocked(AdDecision{
+		SupplyID:   supplyID,
+		Source:     source,
+		ADomain:    adomain,
+		Seat:       seat,
+		BidPrice:   bidPrice,
+		GrossPrice: grossPrice,
+		NetPrice:   netPrice,
+		DemandEp:   demandSource,
+		AppBundle:  appBundle,
+		RawBundle:  rawBundle,
+		CreativeID: creativeID,
+	})
+	s.stateGeneration.Add(1)
+	s.mu.Unlock()
+	s.scheduleDeferredStatePersist()
 }
 
 func normalizeDemandTimeoutMs(timeoutMs int) int {
@@ -1822,7 +1894,7 @@ func registerTargetingRoutes(app *fiber.App, s *store, auth fiber.Handler) {
 
 func registerAnalyticsRoutes(app *fiber.App, s *store, metrics *monitor.Metrics) {
 	app.Get("/api/v1/analytics/overview", func(c *fiber.Ctx) error {
-		return c.JSON(metrics.GetOverview())
+		return c.JSON(buildAnalyticsOverview(metrics.GetOverview()))
 	})
 
 	app.Get("/api/v1/analytics/campaigns", func(c *fiber.Ctx) error {
@@ -1942,54 +2014,19 @@ func registerAnalyticsRoutes(app *fiber.App, s *store, metrics *monitor.Metrics)
 	})
 
 	app.Get("/api/v1/analytics/reports/demand", func(c *fiber.Ctx) error {
-		s.decisionMu.RLock()
-		decisions := append([]AdDecision(nil), s.adDecisions...)
-		s.decisionMu.RUnlock()
+		return c.JSON(buildDemandReport(s.snapshotAnalyticsState()))
+	})
 
-		type agg struct {
-			DemandID   string
-			ADomain    string
-			CreativeID string
-			Imps       int
-			NetRev     float64
-			GrossRev   float64
-		}
-		groups := make(map[string]*agg)
-		for _, d := range decisions {
-			demandID := strings.TrimSpace(d.DemandEp)
-			if demandID == "" {
-				demandID = strings.TrimSpace(d.Seat)
-			}
-			key := demandID + "|" + d.ADomain + "|" + d.CreativeID
-			if groups[key] == nil {
-				groups[key] = &agg{DemandID: demandID, ADomain: d.ADomain, CreativeID: d.CreativeID}
-			}
-			groups[key].Imps++
-			groups[key].NetRev += d.NetPrice / 1000.0
-			groups[key].GrossRev += d.BidPrice / 1000.0
-		}
-
-		var rows []fiber.Map
-		for _, g := range groups {
-			ecpm := 0.0
-			if g.Imps > 0 {
-				ecpm = (g.NetRev / float64(g.Imps)) * 1000.0
-			}
-			gross := 0.0
-			if g.Imps > 0 {
-				gross = (g.GrossRev / float64(g.Imps)) * 1000.0
-			}
-			rows = append(rows, fiber.Map{
-				"adomain": g.ADomain, "demand_id": g.DemandID, "creative_id": g.CreativeID,
-				"impressions": g.Imps, "revenue": g.NetRev, "ecpm": ecpm,
-				"gross_cpm": gross,
-			})
-		}
-		return c.JSON(rows)
+	app.Get("/api/v1/analytics/reports/demand-totals", func(c *fiber.Ctx) error {
+		return c.JSON(buildDemandTotalsReport(s.snapshotAnalyticsState()))
 	})
 
 	app.Get("/api/v1/analytics/reports/supply", func(c *fiber.Ctx) error {
-		return c.JSON([]fiber.Map{})
+		return c.JSON(buildSupplyReport(s.snapshotAnalyticsState()))
+	})
+
+	app.Get("/api/v1/analytics/reports/bundles", func(c *fiber.Ctx) error {
+		return c.JSON(buildBundleReport(s.snapshotAnalyticsState()))
 	})
 
 	app.Get("/api/v1/analytics/reports/delivery-health", func(c *fiber.Ctx) error {
@@ -2825,6 +2862,10 @@ func handlePipelineServeResult(c *fiber.Ctx, p *pipeline.Pipeline, metrics *moni
 		cm.Spend += result.Winner.ReportingPrice(result.WinPrice) / 1000.0
 		cm.SpendMu.Unlock()
 	}
+
+	metrics.RecordWin(result.WinPrice)
+	metrics.RecordSpend(result.Winner.ReportingPrice(result.WinPrice))
+	metrics.RecordGrossSpend(result.WinPrice)
 
 	s.recordAdDecision(req, result.Winner, result.WinPrice, auditSupplyID, auditSource, auditBundle, result.AdapterID, campaignID, campaignName, deliveryStatus)
 	p.FinalizeDelivery(result)

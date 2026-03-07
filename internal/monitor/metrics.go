@@ -17,16 +17,17 @@ type Metrics struct {
 	NoBidReasons        sync.Map // map[string]*atomic.Int64
 
 	// Global counters
-	AdRequests    atomic.Int64
-	AdOpps        atomic.Int64
-	Impressions   atomic.Int64
-	Completions   atomic.Int64
-	Clicks        atomic.Int64
-	NoBids        atomic.Int64
-	Errors        atomic.Int64
-	AdapterErrors atomic.Int64
-	TotalSpendMu  sync.Mutex
-	TotalSpend    float64
+	AdRequests      atomic.Int64
+	AdOpps          atomic.Int64
+	Impressions     atomic.Int64
+	Completions     atomic.Int64
+	Clicks          atomic.Int64
+	NoBids          atomic.Int64
+	Errors          atomic.Int64
+	AdapterErrors   atomic.Int64
+	RevenueMu       sync.Mutex
+	TotalSpend      float64
+	TotalGrossSpend float64
 
 	// VAST event counters
 	VastStarts atomic.Int64
@@ -136,9 +137,15 @@ func (m *Metrics) RecordNoBidReason(reason string) {
 }
 
 func (m *Metrics) RecordSpend(cpm float64) {
-	m.TotalSpendMu.Lock()
+	m.RevenueMu.Lock()
 	m.TotalSpend += cpm / 1000.0
-	m.TotalSpendMu.Unlock()
+	m.RevenueMu.Unlock()
+}
+
+func (m *Metrics) RecordGrossSpend(cpm float64) {
+	m.RevenueMu.Lock()
+	m.TotalGrossSpend += cpm / 1000.0
+	m.RevenueMu.Unlock()
 }
 
 func (m *Metrics) RecordWin(price float64) {
@@ -296,44 +303,47 @@ func (m *Metrics) GetCampaignMetric(campaignID int) *CampaignMetric {
 
 // Overview returns a snapshot of global metrics for the dashboard.
 type Overview struct {
-	AdRequests    int64   `json:"ad_requests"`
-	AdOpps        int64   `json:"ad_opportunities"`
-	Impressions   int64   `json:"impressions"`
-	Completions   int64   `json:"completions"`
-	Clicks        int64   `json:"clicks"`
-	NoBids        int64   `json:"no_bids"`
-	Errors        int64   `json:"errors"`
-	AdapterErrors int64   `json:"adapter_errors"`
-	TotalSpend    float64 `json:"total_spend"`
-	Uptime        string  `json:"uptime"`
-	AvgBidLatency float64 `json:"avg_bid_latency_ms"`
-	BidWins       int64   `json:"bid_wins"`
-	BidLosses     int64   `json:"bid_losses"`
-	VastStarts    int64   `json:"vast_starts"`
-	VastErrors    int64   `json:"vast_errors"`
+	AdRequests      int64   `json:"ad_requests"`
+	AdOpps          int64   `json:"ad_opportunities"`
+	Impressions     int64   `json:"impressions"`
+	Completions     int64   `json:"completions"`
+	Clicks          int64   `json:"clicks"`
+	NoBids          int64   `json:"no_bids"`
+	Errors          int64   `json:"errors"`
+	AdapterErrors   int64   `json:"adapter_errors"`
+	TotalSpend      float64 `json:"total_spend"`
+	TotalGrossSpend float64 `json:"total_gross_spend"`
+	Uptime          string  `json:"uptime"`
+	AvgBidLatency   float64 `json:"avg_bid_latency_ms"`
+	BidWins         int64   `json:"bid_wins"`
+	BidLosses       int64   `json:"bid_losses"`
+	VastStarts      int64   `json:"vast_starts"`
+	VastErrors      int64   `json:"vast_errors"`
 }
 
 func (m *Metrics) GetOverview() Overview {
-	m.TotalSpendMu.Lock()
+	m.RevenueMu.Lock()
 	spend := m.TotalSpend
-	m.TotalSpendMu.Unlock()
+	grossSpend := m.TotalGrossSpend
+	m.RevenueMu.Unlock()
 
 	return Overview{
-		AdRequests:    m.AdRequests.Load(),
-		AdOpps:        m.AdOpps.Load(),
-		Impressions:   m.Impressions.Load(),
-		Completions:   m.Completions.Load(),
-		Clicks:        m.Clicks.Load(),
-		NoBids:        m.NoBids.Load(),
-		Errors:        m.Errors.Load(),
-		AdapterErrors: m.AdapterErrors.Load(),
-		TotalSpend:    spend,
-		Uptime:        time.Since(m.StartTime).Round(time.Second).String(),
-		AvgBidLatency: m.AvgBidLatency(),
-		BidWins:       m.BidWins.Load(),
-		BidLosses:     m.BidLosses.Load(),
-		VastStarts:    m.VastStarts.Load(),
-		VastErrors:    m.VastErrors.Load(),
+		AdRequests:      m.AdRequests.Load(),
+		AdOpps:          m.AdOpps.Load(),
+		Impressions:     m.Impressions.Load(),
+		Completions:     m.Completions.Load(),
+		Clicks:          m.Clicks.Load(),
+		NoBids:          m.NoBids.Load(),
+		Errors:          m.Errors.Load(),
+		AdapterErrors:   m.AdapterErrors.Load(),
+		TotalSpend:      spend,
+		TotalGrossSpend: grossSpend,
+		Uptime:          time.Since(m.StartTime).Round(time.Second).String(),
+		AvgBidLatency:   m.AvgBidLatency(),
+		BidWins:         m.BidWins.Load(),
+		BidLosses:       m.BidLosses.Load(),
+		VastStarts:      m.VastStarts.Load(),
+		VastErrors:      m.VastErrors.Load(),
 	}
 }
 

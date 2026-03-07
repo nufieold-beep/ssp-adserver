@@ -265,9 +265,7 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 		return result
 	}
 
-	// ── Stage 8: Record provisional winner; final notices happen after delivery approval ──
-	p.Metrics.RecordWin(auctionResult.WinPrice)
-	p.Metrics.RecordSpend(winner.ReportingPrice(auctionResult.WinPrice))
+	// ── Stage 8: Final notices happen only after delivery approval ──
 
 	p.Metrics.AddTrafficEvent(monitor.TrafficEvent{
 		Type: "ortb_response", RequestID: req.ID, Env: detectRequestEnvironment(req),
