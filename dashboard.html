@@ -154,6 +154,7 @@ textarea{resize:vertical;min-height:68px}
     <div class="nav-item" data-page="vast-delivery" onclick="showPage('vast-delivery')" style="padding-left:40px">VAST Delivery</div>
     <div class="nav-item" data-page="traffic-inspector" onclick="showPage('traffic-inspector')" style="padding-left:40px">Traffic Inspector</div>
     <div class="nav-item" data-page="decision-audit" onclick="showPage('decision-audit')" style="padding-left:40px">Decision Audit</div>
+    <div class="nav-item" data-page="metrics-export" onclick="showPage('metrics-export')" style="padding-left:40px">Metrics Export</div>
 
     <div class="nav-section">Configuration</div>
     <div class="nav-item" data-page="supply-tags" onclick="showPage('supply-tags')" style="padding-left:40px">Supply Sources</div>
@@ -379,6 +380,72 @@ textarea{resize:vertical;min-height:68px}
         <th>Bundle</th><th>Raw Bundle</th><th>Country</th><th>Device</th>
       </tr></thead>
         <tbody id="decBody"><tr><td colspan="11" class="empty">Loading...</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ══════ METRICS EXPORT ══════ -->
+<div class="page" id="page-metrics-export">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;gap:16px;flex-wrap:wrap">
+    <div>
+      <h3 style="font-size:16px;margin:0">Metrics Export</h3>
+      <p style="font-size:13px;color:var(--fg3);margin:4px 0 0">Export request, fill, and revenue metrics grouped by date or hour in UTC.</p>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-secondary btn-sm" onclick="loadMetricsExport()">↻ Refresh</button>
+      <button class="btn btn-primary btn-sm" onclick="exportMetricsCSV()">Export CSV</button>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header"><h3>Export Filters</h3><span style="font-size:11px;color:var(--fg3)">Date and hour are UTC</span></div>
+    <div class="card-body">
+      <div class="form-row">
+        <div class="form-group"><label>Preset</label>
+          <select id="mxPreset" onchange="applyMetricsExportPreset();loadMetricsExport()">
+            <option value="today">Today</option>
+            <option value="yesterday">Yesterday</option>
+            <option value="month">This Month</option>
+            <option value="custom">Custom Range</option>
+          </select>
+        </div>
+        <div class="form-group"><label>Group By</label>
+          <select id="mxGroupBy" onchange="loadMetricsExport()">
+            <option value="date">Date</option>
+            <option value="hour">Hour</option>
+          </select>
+        </div>
+        <div class="form-group"><label>Timezone</label><input value="UTC" disabled></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Start Date</label><input id="mxStartDate" type="date"></div>
+        <div class="form-group"><label>Start Hour</label><input id="mxStartHour" type="number" min="0" max="23" value="0"></div>
+        <div class="form-group"><label>End Date</label><input id="mxEndDate" type="date"></div>
+        <div class="form-group"><label>End Hour</label><input id="mxEndHour" type="number" min="0" max="23" value="23"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+        <div id="mxRangeLabel" style="font-size:12px;color:var(--fg3)">UTC range: loading…</div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-secondary btn-sm" onclick="loadMetricsExport()">Preview</button>
+          <button class="btn btn-primary btn-sm" onclick="exportMetricsCSV()">Export CSV</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="stats-grid">
+    <div class="stat-card accent"><div class="label">Rows</div><div class="value" id="mxRows">–</div></div>
+    <div class="stat-card blue"><div class="label">Ad Requests</div><div class="value" id="mxRequests">–</div></div>
+    <div class="stat-card green"><div class="label">Filled Opps</div><div class="value" id="mxFilled">–</div></div>
+    <div class="stat-card yellow"><div class="label">Revenue</div><div class="value" id="mxRevenue">–</div></div>
+  </div>
+  <div class="card">
+    <div class="card-header"><h3>Preview</h3><span id="mxSummary" style="font-size:11px;color:var(--fg3)">No data loaded</span></div>
+    <div class="card-body table-wrap">
+      <table><thead><tr>
+        <th>Date</th><th>Hour UTC</th><th>Reqs</th><th>Opps</th><th>Filled</th><th>Imps</th><th>No-Bids</th>
+        <th>Revenue</th><th>Gross Rev</th><th>Req Fill</th><th>Opp Fill</th><th>eCPM</th><th>Gross CPM</th><th>VTR</th>
+      </tr></thead>
+        <tbody id="mxBody"><tr><td colspan="14" class="empty">No export data yet</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -862,6 +929,7 @@ function toast(msg,type='success'){const el=document.createElement('div');el.cla
 function openModal(id){$(id).classList.add('active')}
 function closeModal(id){$(id).classList.remove('active')}
 function pct(a,b){return b>0?((a/b)*100).toFixed(1)+'%':'0%'}
+function fmtPctValue(n){return Number(n||0).toFixed(1)+'%'}
 function hasStoredAuth(){
   const persisted=localStorage.getItem(AUTH_STORAGE_KEY);
   if(persisted==='1') return true;
@@ -911,7 +979,7 @@ function buildFunnel(containerId, data) {
 const TITLES = {
   'dashboard':'Overview','live-traffic':'Live Traffic','bid-stream':'Bid Stream',
   'vast-delivery':'VAST Delivery','traffic-inspector':'Traffic Inspector',
-  'decision-audit':'Decision Audit','supply-tags':'Supply Sources',
+  'decision-audit':'Decision Audit','metrics-export':'Metrics Export','supply-tags':'Supply Sources',
   'demand-ortb':'Demand ORTB','demand-vast':'Demand VAST',
   'mappings':'Mappings','settings':'Settings',
   'adapters':'Demand Adapters','deals':'Deals & PMP',
@@ -931,6 +999,7 @@ function showPage(name) {
     case 'vast-delivery':loadVastDelivery();break;
     case 'traffic-inspector':loadInspector();break;
     case 'decision-audit':loadDecisions();break;
+    case 'metrics-export':loadMetricsExport();break;
     case 'supply-tags':loadSupplyTags();break;
     case 'demand-ortb':loadDemandOrtb();break;
     case 'demand-vast':loadDemandVast();break;
@@ -1148,6 +1217,105 @@ async function loadDecisions() {
       <td>${cleanBundleDisplay(d.app_bundle)}</td><td>${esc(d.raw_bundle||'—')}</td><td>${esc(d.country||'—')}</td><td>${esc(d.device_type||'—')}</td>
     </tr>`).join(''):'<tr><td colspan="12" class="empty">No decisions</td></tr>';
   } catch(e) {}
+}
+
+// ═══════════════════════════════════════════
+// METRICS EXPORT
+// ═══════════════════════════════════════════
+function utcDateInputValue(date){
+  return new Date(Date.UTC(date.getUTCFullYear(),date.getUTCMonth(),date.getUTCDate())).toISOString().slice(0,10);
+}
+function applyMetricsExportPreset(){
+  const preset=$v('mxPreset')||'today';
+  const now=new Date();
+  const todayUtc=new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),now.getUTCDate()));
+  let start=new Date(todayUtc);
+  let end=new Date(todayUtc);
+  if(preset==='yesterday'){
+    start.setUTCDate(start.getUTCDate()-1);
+    end.setUTCDate(end.getUTCDate()-1);
+  } else if(preset==='month'){
+    start=new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),1));
+    end=new Date(todayUtc);
+  } else if(preset==='custom' && !$v('mxStartDate') && !$v('mxEndDate')){
+    $('mxStartDate').value=utcDateInputValue(todayUtc);
+    $('mxEndDate').value=utcDateInputValue(todayUtc);
+  }
+  if(preset!=='custom'){
+    $('mxStartDate').value=utcDateInputValue(start);
+    $('mxEndDate').value=utcDateInputValue(end);
+    $('mxStartHour').value='0';
+    $('mxEndHour').value='23';
+  }
+  const isCustom=preset==='custom';
+  ['mxStartDate','mxEndDate','mxStartHour','mxEndHour'].forEach(id=>{$(id).disabled=!isCustom;});
+}
+function buildMetricsExportParams(format='json'){
+  const preset=$v('mxPreset')||'today';
+  const params=new URLSearchParams({preset,group_by:$v('mxGroupBy')||'date'});
+  if(format&&format!=='json') params.set('format',format);
+  if(preset==='custom'){
+    params.set('start_date',$v('mxStartDate'));
+    params.set('end_date',$v('mxEndDate'));
+    params.set('start_hour',$v('mxStartHour'));
+    params.set('end_hour',$v('mxEndHour'));
+  }
+  return params;
+}
+async function loadMetricsExport(){
+  try{
+    const data=await api(`/api/v1/analytics/reports/export-metrics?${buildMetricsExportParams().toString()}`);
+    const rows=data.rows||[];
+    const totals=rows.reduce((acc,row)=>{
+      acc.requests+=(row.ad_requests||0);
+      acc.filled+=(row.filled_opportunities||0);
+      acc.revenue+=(row.revenue||0);
+      return acc;
+    },{requests:0,filled:0,revenue:0});
+    $('mxRows').textContent=fmtNum(rows.length);
+    $('mxRequests').textContent=fmtNum(totals.requests);
+    $('mxFilled').textContent=fmtNum(totals.filled);
+    $('mxRevenue').textContent=fmtMoney(totals.revenue);
+    $('mxRangeLabel').textContent=`UTC range: ${data.start_date||'—'} ${String(data.start_hour??0).padStart(2,'0')}:00 → ${data.end_date||'—'} ${String(data.end_hour??23).padStart(2,'0')}:59`;
+    $('mxSummary').textContent=`${fmtNum(rows.length)} ${data.group_by==='hour'?'hourly':'daily'} rows`;
+    $('mxBody').innerHTML=rows.length?rows.map(row=>`<tr>
+      <td>${esc(row.date||'—')}</td><td>${esc(row.hour||'All day')}</td><td>${fmtNum(row.ad_requests||0)}</td><td>${fmtNum(row.ad_opportunities||0)}</td>
+      <td>${fmtNum(row.filled_opportunities||0)}</td><td>${fmtNum(row.impressions||0)}</td><td>${fmtNum(row.no_bids||0)}</td>
+      <td>${fmtMoney(row.revenue||0)}</td><td>${fmtMoney(row.gross_revenue||0)}</td><td>${fmtPctValue(row.ad_request_fill_rate||0)}</td>
+      <td>${fmtPctValue(row.opportunity_fill_rate||0)}</td><td>$${Number(row.ecpm||0).toFixed(2)}</td><td>$${Number(row.gross_cpm||0).toFixed(2)}</td><td>${fmtPctValue(row.vtr||0)}</td>
+    </tr>`).join(''):'<tr><td colspan="14" class="empty">No export data for this range</td></tr>';
+  }catch(e){}
+}
+async function exportMetricsCSV(){
+  try{
+    const url=apiURL(`/api/v1/analytics/reports/export-metrics?${buildMetricsExportParams('csv').toString()}`);
+    const headers=API_KEY?{'Authorization':'Bearer '+API_KEY}:{};
+    const res=await fetch(url,{credentials:'same-origin',headers});
+    if(res.status===401&&hasStoredAuth()){
+      promptReLogin('Session expired. Please sign in again.');
+      return;
+    }
+    if(!res.ok){
+      let data={};
+      try{data=await res.json();}catch(_){data={};}
+      throw new Error(data.error||`HTTP ${res.status}`);
+    }
+    const blob=await res.blob();
+    const link=document.createElement('a');
+    const disposition=res.headers.get('Content-Disposition')||'';
+    const match=disposition.match(/filename="([^"]+)"/i);
+    link.href=URL.createObjectURL(blob);
+    link.download=match&&match[1]?match[1]:'metrics-export.csv';
+    document.body.appendChild(link);
+    link.click();
+    setTimeout(()=>{URL.revokeObjectURL(link.href);link.remove();},0);
+    toast('Metrics CSV downloaded');
+  }catch(e){toast(e.message||'Failed to export metrics','error');}
+}
+function initMetricsExportControls(){
+  $('mxPreset').value='today';
+  $('mxGroupBy').value='date';
+  applyMetricsExportPreset();
 }
 
 // ═══════════════════════════════════════════
@@ -1657,6 +1825,7 @@ document.addEventListener('DOMContentLoaded',function(){
   ['loginUser','loginPass'].forEach(function(id){
     $(id).addEventListener('keydown',function(e){if(e.key==='Enter')doLogin()});
   });
+  initMetricsExportControls();
   initializeDashboardAuth();
 });
 </script>

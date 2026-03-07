@@ -1,10 +1,13 @@
 package http
 
 import (
+	"bytes"
+	"encoding/csv"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"ssp/internal/monitor"
 	"ssp/internal/openrtb"
@@ -42,10 +45,11 @@ type persistedBundleAnalytics struct {
 }
 
 type persistedAnalyticsState struct {
-	Totals  persistedAnalyticsTotals   `json:"totals"`
-	Demand  []persistedDemandAnalytics `json:"demand"`
-	Supply  []persistedSupplyAnalytics `json:"supply"`
-	Bundles []persistedBundleAnalytics `json:"bundles"`
+	Totals        persistedAnalyticsTotals     `json:"totals"`
+	Demand        []persistedDemandAnalytics   `json:"demand"`
+	Supply        []persistedSupplyAnalytics   `json:"supply"`
+	Bundles       []persistedBundleAnalytics   `json:"bundles"`
+	HourlyMetrics []monitor.HourlyMetricBucket `json:"hourly_metrics,omitempty"`
 }
 
 type analyticsOverviewResponse struct {
@@ -94,6 +98,67 @@ type bundleReportRow struct {
 	GrossRevenue        float64 `json:"gross_revenue"`
 	ECPM                float64 `json:"ecpm"`
 	GrossCPM            float64 `json:"gross_cpm"`
+}
+
+type metricsExportQuery struct {
+	Preset           string    `json:"preset"`
+	GroupBy          string    `json:"group_by"`
+	Timezone         string    `json:"timezone"`
+	StartDate        string    `json:"start_date"`
+	EndDate          string    `json:"end_date"`
+	StartHour        int       `json:"start_hour"`
+	EndHour          int       `json:"end_hour"`
+	StartTime        time.Time `json:"start_time"`
+	EndTimeExclusive time.Time `json:"end_time_exclusive"`
+}
+
+type metricsExportAccumulator struct {
+	AdRequests          int64
+	AdOpportunities     int64
+	FilledOpportunities int64
+	Impressions         int64
+	Completions         int64
+	Clicks              int64
+	NoBids              int64
+	Errors              int64
+	AdapterErrors       int64
+	Revenue             float64
+	GrossRevenue        float64
+}
+
+type metricsExportRow struct {
+	Date                string  `json:"date"`
+	Hour                string  `json:"hour,omitempty"`
+	AdRequests          int64   `json:"ad_requests"`
+	AdOpportunities     int64   `json:"ad_opportunities"`
+	FilledOpportunities int64   `json:"filled_opportunities"`
+	Impressions         int64   `json:"impressions"`
+	Completions         int64   `json:"completions"`
+	Clicks              int64   `json:"clicks"`
+	NoBids              int64   `json:"no_bids"`
+	Errors              int64   `json:"errors"`
+	AdapterErrors       int64   `json:"adapter_errors"`
+	Revenue             float64 `json:"revenue"`
+	GrossRevenue        float64 `json:"gross_revenue"`
+	AdRequestFillRate   float64 `json:"ad_request_fill_rate"`
+	OpportunityFillRate float64 `json:"opportunity_fill_rate"`
+	NoBidRate           float64 `json:"no_bid_rate"`
+	VTR                 float64 `json:"vtr"`
+	ECPM                float64 `json:"ecpm"`
+	GrossCPM            float64 `json:"gross_cpm"`
+}
+
+type metricsExportResponse struct {
+	Preset           string             `json:"preset"`
+	GroupBy          string             `json:"group_by"`
+	Timezone         string             `json:"timezone"`
+	StartDate        string             `json:"start_date"`
+	EndDate          string             `json:"end_date"`
+	StartHour        int                `json:"start_hour"`
+	EndHour          int                `json:"end_hour"`
+	StartTime        time.Time          `json:"start_time"`
+	EndTimeExclusive time.Time          `json:"end_time_exclusive"`
+	Rows             []metricsExportRow `json:"rows"`
 }
 
 type analyticsAccumulator struct {
@@ -185,6 +250,9 @@ func (s *store) loadPersistedAnalyticsLocked(snapshot persistedAnalyticsState) {
 		}
 		s.analyticsBundleTotals[bundleID] = analyticsAccumulatorFromPersistedTotals(bundle.persistedAnalyticsTotals)
 	}
+	if s.metrics != nil {
+		s.metrics.LoadHourlyMetrics(snapshot.HourlyMetrics)
+	}
 }
 
 func (s *store) snapshotPersistedAnalyticsLocked() persistedAnalyticsState {
@@ -217,6 +285,9 @@ func (s *store) snapshotPersistedAnalyticsLocked() persistedAnalyticsState {
 		out.Bundles = append(out.Bundles, persistedBundleAnalytics{AppBundle: bundleID, persistedAnalyticsTotals: persistedTotalsFromAccumulator(totals)})
 	}
 	sort.Slice(out.Bundles, func(i, j int) bool { return out.Bundles[i].AppBundle < out.Bundles[j].AppBundle })
+	if s.metrics != nil {
+		out.HourlyMetrics = s.metrics.SnapshotHourlyMetrics()
+	}
 
 	return out
 }
@@ -608,4 +679,271 @@ func buildDemandTotalsReport(state analyticsState) []demandTotalsReportRow {
 	})
 
 	return rows
+}
+
+func resolveMetricsExportQuery(preset, groupBy, startDate, endDate, startHourRaw, endHourRaw string, now time.Time) (metricsExportQuery, error) {
+	preset = strings.ToLower(strings.TrimSpace(preset))
+	if preset == "" {
+		preset = "today"
+	}
+
+	groupBy = strings.ToLower(strings.TrimSpace(groupBy))
+	if groupBy == "" {
+		groupBy = "date"
+	}
+	if groupBy != "date" && groupBy != "hour" {
+		return metricsExportQuery{}, fmt.Errorf("invalid group_by %q", groupBy)
+	}
+
+	utcNow := now.UTC()
+	todayStart := time.Date(utcNow.Year(), utcNow.Month(), utcNow.Day(), 0, 0, 0, 0, time.UTC)
+
+	query := metricsExportQuery{
+		Preset:   preset,
+		GroupBy:  groupBy,
+		Timezone: "UTC",
+	}
+
+	switch preset {
+	case "today":
+		query.StartTime = todayStart
+		query.EndTimeExclusive = todayStart.Add(24 * time.Hour)
+	case "yesterday":
+		query.StartTime = todayStart.Add(-24 * time.Hour)
+		query.EndTimeExclusive = todayStart
+	case "month":
+		query.StartTime = time.Date(utcNow.Year(), utcNow.Month(), 1, 0, 0, 0, 0, time.UTC)
+		query.EndTimeExclusive = todayStart.Add(24 * time.Hour)
+	case "custom":
+		startDay, err := parseMetricsExportDate(startDate)
+		if err != nil {
+			return metricsExportQuery{}, fmt.Errorf("invalid start_date: %w", err)
+		}
+		endDay, err := parseMetricsExportDate(endDate)
+		if err != nil {
+			return metricsExportQuery{}, fmt.Errorf("invalid end_date: %w", err)
+		}
+		startHour, err := parseMetricsExportHour(startHourRaw, 0)
+		if err != nil {
+			return metricsExportQuery{}, fmt.Errorf("invalid start_hour: %w", err)
+		}
+		endHour, err := parseMetricsExportHour(endHourRaw, 23)
+		if err != nil {
+			return metricsExportQuery{}, fmt.Errorf("invalid end_hour: %w", err)
+		}
+		query.StartTime = time.Date(startDay.Year(), startDay.Month(), startDay.Day(), startHour, 0, 0, 0, time.UTC)
+		query.EndTimeExclusive = time.Date(endDay.Year(), endDay.Month(), endDay.Day(), endHour, 0, 0, 0, time.UTC).Add(time.Hour)
+	default:
+		return metricsExportQuery{}, fmt.Errorf("invalid preset %q", preset)
+	}
+
+	if !query.EndTimeExclusive.After(query.StartTime) {
+		return metricsExportQuery{}, fmt.Errorf("range end must be after range start")
+	}
+
+	query.StartDate = query.StartTime.Format("2006-01-02")
+	query.EndDate = query.EndTimeExclusive.Add(-time.Hour).Format("2006-01-02")
+	query.StartHour = query.StartTime.Hour()
+	query.EndHour = query.EndTimeExclusive.Add(-time.Hour).Hour()
+	return query, nil
+}
+
+func buildMetricsExportResponse(hourly []monitor.HourlyMetricBucket, query metricsExportQuery) metricsExportResponse {
+	return metricsExportResponse{
+		Preset:           query.Preset,
+		GroupBy:          query.GroupBy,
+		Timezone:         query.Timezone,
+		StartDate:        query.StartDate,
+		EndDate:          query.EndDate,
+		StartHour:        query.StartHour,
+		EndHour:          query.EndHour,
+		StartTime:        query.StartTime,
+		EndTimeExclusive: query.EndTimeExclusive,
+		Rows:             buildMetricsExportRows(hourly, query),
+	}
+}
+
+func buildMetricsExportRows(hourly []monitor.HourlyMetricBucket, query metricsExportQuery) []metricsExportRow {
+	if len(hourly) == 0 {
+		return make([]metricsExportRow, 0)
+	}
+
+	type groupedRow struct {
+		stamp time.Time
+		date  string
+		hour  string
+		acc   metricsExportAccumulator
+	}
+
+	rowsByKey := make(map[string]*groupedRow)
+	for _, bucket := range hourly {
+		hour := bucket.Hour.UTC().Truncate(time.Hour)
+		if hour.IsZero() {
+			continue
+		}
+		if hour.Before(query.StartTime) || !hour.Before(query.EndTimeExclusive) {
+			continue
+		}
+
+		key := hour.Format("2006-01-02")
+		rowHour := ""
+		stamp := hour
+		if query.GroupBy == "hour" {
+			key = hour.Format(time.RFC3339)
+			rowHour = hour.Format("15:00")
+		}
+
+		row := rowsByKey[key]
+		if row == nil {
+			row = &groupedRow{
+				stamp: stamp,
+				date:  hour.Format("2006-01-02"),
+				hour:  rowHour,
+			}
+			rowsByKey[key] = row
+		}
+		row.acc.addBucket(bucket)
+	}
+
+	ordered := make([]groupedRow, 0, len(rowsByKey))
+	for _, row := range rowsByKey {
+		ordered = append(ordered, *row)
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		return ordered[i].stamp.Before(ordered[j].stamp)
+	})
+
+	rows := make([]metricsExportRow, 0, len(ordered))
+	for _, row := range ordered {
+		rows = append(rows, metricsExportRow{
+			Date:                row.date,
+			Hour:                row.hour,
+			AdRequests:          row.acc.AdRequests,
+			AdOpportunities:     row.acc.AdOpportunities,
+			FilledOpportunities: row.acc.FilledOpportunities,
+			Impressions:         row.acc.Impressions,
+			Completions:         row.acc.Completions,
+			Clicks:              row.acc.Clicks,
+			NoBids:              row.acc.NoBids,
+			Errors:              row.acc.Errors,
+			AdapterErrors:       row.acc.AdapterErrors,
+			Revenue:             row.acc.Revenue,
+			GrossRevenue:        row.acc.GrossRevenue,
+			AdRequestFillRate:   analyticsPercent(row.acc.FilledOpportunities, row.acc.AdRequests),
+			OpportunityFillRate: analyticsPercent(row.acc.Impressions, row.acc.AdOpportunities),
+			NoBidRate:           analyticsPercent(row.acc.NoBids, row.acc.AdOpportunities),
+			VTR:                 analyticsPercent(row.acc.Completions, row.acc.Impressions),
+			ECPM:                analyticsCPM(row.acc.Revenue, row.acc.FilledOpportunities),
+			GrossCPM:            analyticsCPM(row.acc.GrossRevenue, row.acc.FilledOpportunities),
+		})
+	}
+
+	if rows == nil {
+		return make([]metricsExportRow, 0)
+	}
+	return rows
+}
+
+func renderMetricsExportCSV(rows []metricsExportRow) (string, error) {
+	buf := &bytes.Buffer{}
+	writer := csv.NewWriter(buf)
+	if err := writer.Write([]string{
+		"Date",
+		"Hour UTC",
+		"Ad Requests",
+		"Ad Opportunities",
+		"Filled Opportunities",
+		"Impressions",
+		"Completions",
+		"Clicks",
+		"No Bids",
+		"Errors",
+		"Adapter Errors",
+		"Revenue",
+		"Gross Revenue",
+		"Ad Request Fill Rate (%)",
+		"Opportunity Fill Rate (%)",
+		"No-Bid Rate (%)",
+		"VTR (%)",
+		"eCPM",
+		"Gross CPM",
+	}); err != nil {
+		return "", err
+	}
+
+	for _, row := range rows {
+		hour := row.Hour
+		if hour == "" {
+			hour = "All day"
+		}
+		if err := writer.Write([]string{
+			row.Date,
+			hour,
+			strconv.FormatInt(row.AdRequests, 10),
+			strconv.FormatInt(row.AdOpportunities, 10),
+			strconv.FormatInt(row.FilledOpportunities, 10),
+			strconv.FormatInt(row.Impressions, 10),
+			strconv.FormatInt(row.Completions, 10),
+			strconv.FormatInt(row.Clicks, 10),
+			strconv.FormatInt(row.NoBids, 10),
+			strconv.FormatInt(row.Errors, 10),
+			strconv.FormatInt(row.AdapterErrors, 10),
+			fmt.Sprintf("%.6f", row.Revenue),
+			fmt.Sprintf("%.6f", row.GrossRevenue),
+			fmt.Sprintf("%.2f", row.AdRequestFillRate),
+			fmt.Sprintf("%.2f", row.OpportunityFillRate),
+			fmt.Sprintf("%.2f", row.NoBidRate),
+			fmt.Sprintf("%.2f", row.VTR),
+			fmt.Sprintf("%.2f", row.ECPM),
+			fmt.Sprintf("%.2f", row.GrossCPM),
+		}); err != nil {
+			return "", err
+		}
+	}
+	writer.Flush()
+	if err := writer.Error(); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
+
+func parseMetricsExportDate(raw string) (time.Time, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return time.Time{}, fmt.Errorf("value is required")
+	}
+	parsed, err := time.ParseInLocation("2006-01-02", value, time.UTC)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return parsed.UTC(), nil
+}
+
+func parseMetricsExportHour(raw string, fallback int) (int, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return fallback, nil
+	}
+	hour, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, err
+	}
+	if hour < 0 || hour > 23 {
+		return 0, fmt.Errorf("must be between 0 and 23")
+	}
+	return hour, nil
+}
+
+func (a *metricsExportAccumulator) addBucket(bucket monitor.HourlyMetricBucket) {
+	a.AdRequests += bucket.AdRequests
+	a.AdOpportunities += bucket.AdOpportunities
+	a.FilledOpportunities += bucket.FilledOpportunities
+	a.Impressions += bucket.Impressions
+	a.Completions += bucket.Completions
+	a.Clicks += bucket.Clicks
+	a.NoBids += bucket.NoBids
+	a.Errors += bucket.Errors
+	a.AdapterErrors += bucket.AdapterErrors
+	a.Revenue += bucket.Revenue
+	a.GrossRevenue += bucket.GrossRevenue
 }

@@ -61,6 +61,11 @@ type Metrics struct {
 	trafficCount int
 	maxEvents    int
 
+	timelineMu             sync.RWMutex
+	hourlyMetrics          map[string]HourlyMetricBucket
+	timelineCallbackMu     sync.RWMutex
+	timelineChangeCallback func()
+
 	StartTime time.Time
 }
 
@@ -92,28 +97,86 @@ type TrafficEvent struct {
 	Price     string    `json:"price,omitempty"`
 }
 
+type HourlyMetricBucket struct {
+	Hour                time.Time `json:"hour"`
+	AdRequests          int64     `json:"ad_requests"`
+	AdOpportunities     int64     `json:"ad_opportunities"`
+	FilledOpportunities int64     `json:"filled_opportunities"`
+	Impressions         int64     `json:"impressions"`
+	Completions         int64     `json:"completions"`
+	Clicks              int64     `json:"clicks"`
+	NoBids              int64     `json:"no_bids"`
+	Errors              int64     `json:"errors"`
+	AdapterErrors       int64     `json:"adapter_errors"`
+	Revenue             float64   `json:"revenue"`
+	GrossRevenue        float64   `json:"gross_revenue"`
+}
+
 func New() *Metrics {
 	const defaultMaxEvents = 200
 	return &Metrics{
-		maxEvents:   defaultMaxEvents,
-		trafficRing: make([]TrafficEvent, defaultMaxEvents),
-		StartTime:   time.Now(),
+		maxEvents:     defaultMaxEvents,
+		trafficRing:   make([]TrafficEvent, defaultMaxEvents),
+		hourlyMetrics: make(map[string]HourlyMetricBucket),
+		StartTime:     time.Now(),
 	}
 }
 
-func (m *Metrics) RecordAdRequest()  { m.AdRequests.Add(1) }
-func (m *Metrics) RecordAdOpp()      { m.AdOpps.Add(1) }
-func (m *Metrics) RecordImpression() { m.Impressions.Add(1) }
-func (m *Metrics) RecordCompletion() { m.Completions.Add(1) }
-func (m *Metrics) RecordClick()      { m.Clicks.Add(1) }
-func (m *Metrics) RecordNoBid()      { m.NoBids.Add(1) }
-func (m *Metrics) RecordError()      { m.Errors.Add(1) }
-func (m *Metrics) RecordVastStart()  { m.VastStarts.Add(1) }
-func (m *Metrics) RecordVastQ1()     { m.VastQ1.Add(1) }
-func (m *Metrics) RecordVastMid()    { m.VastMid.Add(1) }
-func (m *Metrics) RecordVastQ3()     { m.VastQ3.Add(1) }
-func (m *Metrics) RecordVastSkip()   { m.VastSkips.Add(1) }
-func (m *Metrics) RecordVastError()  { m.VastErrors.Add(1) }
+func (m *Metrics) RecordAdRequest() {
+	m.AdRequests.Add(1)
+	m.recordHourlyMetric(func(bucket *HourlyMetricBucket) {
+		bucket.AdRequests++
+	})
+}
+
+func (m *Metrics) RecordAdOpp() {
+	m.AdOpps.Add(1)
+	m.recordHourlyMetric(func(bucket *HourlyMetricBucket) {
+		bucket.AdOpportunities++
+	})
+}
+
+func (m *Metrics) RecordImpression() {
+	m.Impressions.Add(1)
+	m.recordHourlyMetric(func(bucket *HourlyMetricBucket) {
+		bucket.Impressions++
+	})
+}
+
+func (m *Metrics) RecordCompletion() {
+	m.Completions.Add(1)
+	m.recordHourlyMetric(func(bucket *HourlyMetricBucket) {
+		bucket.Completions++
+	})
+}
+
+func (m *Metrics) RecordClick() {
+	m.Clicks.Add(1)
+	m.recordHourlyMetric(func(bucket *HourlyMetricBucket) {
+		bucket.Clicks++
+	})
+}
+
+func (m *Metrics) RecordNoBid() {
+	m.NoBids.Add(1)
+	m.recordHourlyMetric(func(bucket *HourlyMetricBucket) {
+		bucket.NoBids++
+	})
+}
+
+func (m *Metrics) RecordError() {
+	m.Errors.Add(1)
+	m.recordHourlyMetric(func(bucket *HourlyMetricBucket) {
+		bucket.Errors++
+	})
+}
+
+func (m *Metrics) RecordVastStart() { m.VastStarts.Add(1) }
+func (m *Metrics) RecordVastQ1()    { m.VastQ1.Add(1) }
+func (m *Metrics) RecordVastMid()   { m.VastMid.Add(1) }
+func (m *Metrics) RecordVastQ3()    { m.VastQ3.Add(1) }
+func (m *Metrics) RecordVastSkip()  { m.VastSkips.Add(1) }
+func (m *Metrics) RecordVastError() { m.VastErrors.Add(1) }
 
 func (m *Metrics) RecordErrorReason(reason string) {
 	if !incrementReasonCounter(&m.ErrorReasons, reason) {
@@ -128,6 +191,9 @@ func (m *Metrics) RecordAdapterErrorReason(reason string) {
 		incrementReasonCounter(&m.AdapterErrorReasons, "unknown")
 	}
 	m.AdapterErrors.Add(1)
+	m.recordHourlyMetric(func(bucket *HourlyMetricBucket) {
+		bucket.AdapterErrors++
+	})
 }
 
 func (m *Metrics) RecordNoBidReason(reason string) {
@@ -140,12 +206,18 @@ func (m *Metrics) RecordSpend(cpm float64) {
 	m.RevenueMu.Lock()
 	m.TotalSpend += cpm / 1000.0
 	m.RevenueMu.Unlock()
+	m.recordHourlyMetric(func(bucket *HourlyMetricBucket) {
+		bucket.Revenue += cpm / 1000.0
+	})
 }
 
 func (m *Metrics) RecordGrossSpend(cpm float64) {
 	m.RevenueMu.Lock()
 	m.TotalGrossSpend += cpm / 1000.0
 	m.RevenueMu.Unlock()
+	m.recordHourlyMetric(func(bucket *HourlyMetricBucket) {
+		bucket.GrossRevenue += cpm / 1000.0
+	})
 }
 
 func (m *Metrics) RecordWin(price float64) {
@@ -157,6 +229,9 @@ func (m *Metrics) RecordWin(price float64) {
 		m.wpCount++
 	}
 	m.WinPricesMu.Unlock()
+	m.recordHourlyMetric(func(bucket *HourlyMetricBucket) {
+		bucket.FilledOpportunities++
+	})
 }
 
 func (m *Metrics) RecordLoss() { m.BidLosses.Add(1) }
@@ -233,6 +308,80 @@ func (m *Metrics) snapshotTrafficEventsLocked() []TrafficEvent {
 		out = append(out, m.trafficRing[idx])
 	}
 	return out
+}
+
+func (m *Metrics) SetTimelineChangeCallback(callback func()) {
+	m.timelineCallbackMu.Lock()
+	m.timelineChangeCallback = callback
+	m.timelineCallbackMu.Unlock()
+}
+
+func (m *Metrics) SnapshotHourlyMetrics() []HourlyMetricBucket {
+	m.timelineMu.RLock()
+	defer m.timelineMu.RUnlock()
+
+	if len(m.hourlyMetrics) == 0 {
+		return nil
+	}
+
+	out := make([]HourlyMetricBucket, 0, len(m.hourlyMetrics))
+	for _, bucket := range m.hourlyMetrics {
+		out = append(out, bucket)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Hour.Before(out[j].Hour)
+	})
+	return out
+}
+
+func (m *Metrics) LoadHourlyMetrics(buckets []HourlyMetricBucket) {
+	m.timelineMu.Lock()
+	if len(buckets) == 0 {
+		m.hourlyMetrics = make(map[string]HourlyMetricBucket)
+		m.timelineMu.Unlock()
+		return
+	}
+
+	m.hourlyMetrics = make(map[string]HourlyMetricBucket, len(buckets))
+	for _, bucket := range buckets {
+		hour := bucket.Hour.UTC().Truncate(time.Hour)
+		if hour.IsZero() {
+			continue
+		}
+		bucket.Hour = hour
+		m.hourlyMetrics[hour.Format(time.RFC3339)] = bucket
+	}
+	m.timelineMu.Unlock()
+}
+
+func (m *Metrics) recordHourlyMetric(update func(bucket *HourlyMetricBucket)) {
+	if m == nil || update == nil {
+		return
+	}
+
+	hour := time.Now().UTC().Truncate(time.Hour)
+	key := hour.Format(time.RFC3339)
+
+	m.timelineMu.Lock()
+	if m.hourlyMetrics == nil {
+		m.hourlyMetrics = make(map[string]HourlyMetricBucket)
+	}
+	bucket := m.hourlyMetrics[key]
+	bucket.Hour = hour
+	update(&bucket)
+	m.hourlyMetrics[key] = bucket
+	m.timelineMu.Unlock()
+
+	m.notifyTimelineChanged()
+}
+
+func (m *Metrics) notifyTimelineChanged() {
+	m.timelineCallbackMu.RLock()
+	callback := m.timelineChangeCallback
+	m.timelineCallbackMu.RUnlock()
+	if callback != nil {
+		callback()
+	}
 }
 
 type ReasonCount struct {

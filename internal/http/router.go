@@ -219,6 +219,7 @@ type store struct {
 	statePersistMu     sync.Mutex
 	statePersistDirty  bool
 	statePersistQueued bool
+	metrics            *monitor.Metrics
 }
 
 type supplyDemandState struct {
@@ -1379,7 +1380,12 @@ type EnterpriseDeps struct {
 
 func NewRouterWithDeps(cfg *config.Config, metrics *monitor.Metrics, configPath string, eDeps *EnterpriseDeps) *fiber.App {
 	app := fiber.New(fiber.Config{BodyLimit: 4 * 1024 * 1024})
+	if metrics == nil {
+		metrics = monitor.New()
+	}
 	s := newStore()
+	s.metrics = metrics
+	metrics.SetTimelineChangeCallback(s.scheduleDeferredStatePersist)
 	statePath := resolveSupplyDemandStatePath(configPath)
 	if err := s.loadSupplyDemandState(statePath); err != nil {
 		log.Printf("Warning: failed to load runtime state (%s): %v", statePath, err)
@@ -1393,9 +1399,6 @@ func NewRouterWithDeps(cfg *config.Config, metrics *monitor.Metrics, configPath 
 	app.Use(SecurityHeaders())
 	app.Use(RequestID())
 
-	if metrics == nil {
-		metrics = monitor.New()
-	}
 	dashPath := "dashboard.html"
 	if cfg != nil {
 		dashPath = cfg.Server.DashboardPath
@@ -2019,6 +2022,35 @@ func registerAnalyticsRoutes(app *fiber.App, s *store, metrics *monitor.Metrics)
 
 	app.Get("/api/v1/analytics/reports/demand-totals", func(c *fiber.Ctx) error {
 		return c.JSON(buildDemandTotalsReport(s.snapshotAnalyticsState()))
+	})
+
+	app.Get("/api/v1/analytics/reports/export-metrics", func(c *fiber.Ctx) error {
+		query, err := resolveMetricsExportQuery(
+			c.Query("preset"),
+			c.Query("group_by"),
+			c.Query("start_date"),
+			c.Query("end_date"),
+			c.Query("start_hour"),
+			c.Query("end_hour"),
+			time.Now(),
+		)
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		}
+
+		response := buildMetricsExportResponse(metrics.SnapshotHourlyMetrics(), query)
+		if strings.EqualFold(strings.TrimSpace(c.Query("format")), "csv") {
+			csvBody, csvErr := renderMetricsExportCSV(response.Rows)
+			if csvErr != nil {
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": csvErr.Error()})
+			}
+			fileName := fmt.Sprintf("metrics-export-%s-%s.csv", query.Preset, query.GroupBy)
+			c.Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", fileName))
+			c.Type("csv")
+			return c.SendString(csvBody)
+		}
+
+		return c.JSON(response)
 	})
 
 	app.Get("/api/v1/analytics/reports/supply", func(c *fiber.Ctx) error {
