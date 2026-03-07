@@ -111,13 +111,21 @@ func requestedVASTVersion(req *openrtb.BidRequest) string {
 	}
 	version := "3.0"
 	for _, protocol := range req.Imp[0].Video.Protocols {
+		candidate := ""
 		switch int(protocol) {
+		case 2, 5:
+			candidate = "2.0"
+		case 3, 6:
+			candidate = "3.0"
 		case 7, 8:
-			return "4.1"
-		case 2:
-			version = "2.0"
-		case 3:
-			version = "3.0"
+			candidate = "4.0"
+		case 11, 12:
+			candidate = "4.1"
+		case 13, 14:
+			candidate = "4.2"
+		}
+		if candidate != "" && vastVersionRank(candidate) > vastVersionRank(version) {
+			version = candidate
 		}
 	}
 	return version

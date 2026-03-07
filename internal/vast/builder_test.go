@@ -60,7 +60,7 @@ func TestImpressionBlockSuppressesJunkBundleWithoutFallback(t *testing.T) {
 
 func TestBuildWrapperUsesRequestedVAST41WithFallbackAndErrorHandling(t *testing.T) {
 	bid := &openrtb.Bid{ID: "bid-1", Adm: "https://dsp.example.com/wrapper", Price: 3.5}
-	req := &openrtb.BidRequest{Imp: []openrtb.Imp{{Video: &openrtb.Video{Protocols: []adcom1.MediaCreativeSubtype{7, 8}}}}}
+	req := &openrtb.BidRequest{Imp: []openrtb.Imp{{Video: &openrtb.Video{Protocols: []adcom1.MediaCreativeSubtype{11, 12}}}}}
 
 	xml := Build(bid, req, "https://ads.example.com")
 	if !strings.Contains(xml, `<VAST version="4.1">`) {
@@ -76,7 +76,7 @@ func TestBuildWrapperUsesRequestedVAST41WithFallbackAndErrorHandling(t *testing.
 
 func TestBuildInlineAddsViewableMeasurementForVAST41(t *testing.T) {
 	bid := &openrtb.Bid{ID: "bid-2", CrID: "cr-2", Adm: "https://cdn.example.com/video.mp4", Price: 3.5}
-	req := &openrtb.BidRequest{Imp: []openrtb.Imp{{Video: &openrtb.Video{Protocols: []adcom1.MediaCreativeSubtype{7}}}}}
+	req := &openrtb.BidRequest{Imp: []openrtb.Imp{{Video: &openrtb.Video{Protocols: []adcom1.MediaCreativeSubtype{11}}}}}
 
 	xml := Build(bid, req, "https://ads.example.com")
 	if !strings.Contains(xml, `<ViewableImpression><Viewable><![CDATA[https://ads.example.com/api/v1/event/viewable?`) {
@@ -95,5 +95,21 @@ func TestBuildNoAdForRequestUsesRequestedVASTVersion(t *testing.T) {
 	xml := BuildNoAdForRequest(req)
 	if !strings.Contains(xml, `<VAST version="2.0"/>`) {
 		t.Fatalf("expected VAST 2.0 no-ad response, got %q", xml)
+	}
+}
+
+func TestBuildNoAdForRequestUsesRequestedVAST40Version(t *testing.T) {
+	req := &openrtb.BidRequest{Imp: []openrtb.Imp{{Video: &openrtb.Video{Protocols: []adcom1.MediaCreativeSubtype{7, 8}}}}}
+	xml := BuildNoAdForRequest(req)
+	if !strings.Contains(xml, `<VAST version="4.0"/>`) {
+		t.Fatalf("expected VAST 4.0 no-ad response, got %q", xml)
+	}
+}
+
+func TestBuildNoAdForRequestUsesRequestedVAST42Version(t *testing.T) {
+	req := &openrtb.BidRequest{Imp: []openrtb.Imp{{Video: &openrtb.Video{Protocols: []adcom1.MediaCreativeSubtype{13}}}}}
+	xml := BuildNoAdForRequest(req)
+	if !strings.Contains(xml, `<VAST version="4.2"/>`) {
+		t.Fatalf("expected VAST 4.2 no-ad response, got %q", xml)
 	}
 }

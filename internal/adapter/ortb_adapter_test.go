@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"ssp/internal/openrtb"
 
@@ -286,6 +287,49 @@ func TestORTBAdapterClampsOutboundTMaxToClientBudget(t *testing.T) {
 	}
 	if got, ok := gotPayload["tmax"].(float64); !ok || int(got) != 70 {
 		t.Fatalf("expected outbound tmax to be clamped to 70ms, got %#v", gotPayload["tmax"])
+	}
+}
+
+func TestORTBAdapterClampsOutboundTMaxToRemainingContextBudget(t *testing.T) {
+	var gotPayload map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotPayload)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	request := &openrtb.BidRequest{ID: "req-context-tmax", TMax: 500, Imp: []openrtb.Imp{{ID: "imp-1"}}}
+	adapter := NewORTBAdapter(&AdapterConfig{
+		ID:        "ortb-timeout-context",
+		Name:      "ORTB Timeout Context",
+		Type:      TypeORTB,
+		Endpoint:  server.URL,
+		Status:    1,
+		TimeoutMs: 400,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+
+	result, err := adapter.RequestBids(ctx, request)
+	if err != nil {
+		t.Fatalf("unexpected adapter error: %v", err)
+	}
+	if result == nil || !result.NoBid {
+		t.Fatalf("expected no-bid result from 204 response, got %#v", result)
+	}
+	got, ok := gotPayload["tmax"].(float64)
+	if !ok {
+		t.Fatalf("expected outbound tmax in payload, got %#v", gotPayload["tmax"])
+	}
+	if got <= 0 || got > 150 {
+		t.Fatalf("expected outbound tmax to respect remaining context budget, got %#v", got)
+	}
+	if got >= 350 {
+		t.Fatalf("expected outbound tmax to be lower than the static client budget when request context is tighter, got %#v", got)
 	}
 }
 

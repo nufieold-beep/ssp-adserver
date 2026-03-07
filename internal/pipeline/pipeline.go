@@ -275,19 +275,20 @@ func (p *Pipeline) collectCandidateBids(req *openrtb.BidRequest, telemetry reque
 			summary.attemptedAdapterIDs = append(summary.attemptedAdapterIDs, adapterID)
 		}
 		if br.Error != nil {
+			timedOut := isTimeoutAdapterError(br.Error, br.TimedOut)
 			summary.errorCount++
 			summary.errorAdapterIDs = append(summary.errorAdapterIDs, br.AdapterID)
-			if br.TimedOut {
+			if timedOut {
 				summary.timeoutCount++
 				summary.timeoutAdapterIDs = append(summary.timeoutAdapterIDs, br.AdapterID)
 			}
 			if p.Metrics != nil {
-				p.Metrics.RecordAdapterErrorReason(classifyAdapterErrorReason(br.AdapterID, br.Error, br.TimedOut))
+				p.Metrics.RecordAdapterErrorReason(classifyAdapterErrorReason(br.AdapterID, br.Error, timedOut))
 				p.Metrics.AddTrafficEvent(monitor.TrafficEvent{
 					Type:      "adapter_error",
 					RequestID: req.ID,
 					Env:       telemetry.env,
-					Details:   formatAdapterErrorDetail(br.AdapterID, br.Error, br.TimedOut),
+					Details:   formatAdapterErrorDetail(br.AdapterID, br.Error, timedOut),
 					Bundle:    telemetry.bundle,
 					Supply:    telemetry.supply,
 				})
@@ -536,7 +537,7 @@ func buildNoBidReasonCode(totalAdapters, errorCount, timeoutCount, noBidCount in
 	switch {
 	case totalAdapters == 0:
 		return "no_eligible_adapters"
-	case errorCount == totalAdapters && timeoutCount == totalAdapters:
+	case timeoutCount == totalAdapters:
 		return "all_adapters_timed_out"
 	case errorCount == totalAdapters:
 		return "all_adapters_errored"
@@ -560,13 +561,11 @@ func formatAdapterErrorDetail(adapterID string, err error, timedOut bool) string
 
 func classifyAdapterErrorReason(adapterID string, err error, timedOut bool) string {
 	reason := "unknown"
-	if timedOut {
+	if isTimeoutAdapterError(err, timedOut) {
 		reason = "timeout"
 	} else if err != nil {
 		msg := strings.ToLower(err.Error())
 		switch {
-		case strings.Contains(msg, "context deadline exceeded"), strings.Contains(msg, "client.timeout"), strings.Contains(msg, "timeout"):
-			reason = "timeout"
 		case strings.Contains(msg, "http 400"):
 			reason = "http_400"
 		case strings.Contains(msg, "http 401"):
@@ -599,4 +598,15 @@ func classifyAdapterErrorReason(adapterID string, err error, timedOut bool) stri
 		return reason
 	}
 	return adapterID + ":" + reason
+}
+
+func isTimeoutAdapterError(err error, timedOut bool) bool {
+	if timedOut {
+		return true
+	}
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(msg, "context deadline exceeded") || strings.Contains(msg, "client.timeout") || strings.Contains(msg, "timeout")
 }

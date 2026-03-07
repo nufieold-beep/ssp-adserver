@@ -54,7 +54,7 @@ func (a *ORTBAdapter) Supports(_ *openrtb.BidRequest) bool { return true }
 
 func (a *ORTBAdapter) RequestBids(ctx context.Context, req *openrtb.BidRequest) (*BidResult, error) {
 	// Clone and apply per-endpoint ORTB fields
-	outReq := a.applyEndpointConfig(req)
+	outReq := a.applyEndpointConfig(ctx, req)
 
 	buf := httputil.GetBuffer()
 	defer httputil.PutBuffer(buf)
@@ -137,7 +137,7 @@ func (a *ORTBAdapter) RequestBids(ctx context.Context, req *openrtb.BidRequest) 
 }
 
 // applyEndpointConfig merges per-endpoint ORTB settings into a copy of the bid request.
-func (a *ORTBAdapter) applyEndpointConfig(req *openrtb.BidRequest) *openrtb.BidRequest {
+func (a *ORTBAdapter) applyEndpointConfig(ctx context.Context, req *openrtb.BidRequest) *openrtb.BidRequest {
 	// Shallow copy the request
 	clonedReq := *req
 
@@ -169,7 +169,7 @@ func (a *ORTBAdapter) applyEndpointConfig(req *openrtb.BidRequest) *openrtb.BidR
 			}
 		}
 	}
-	clonedReq.TMax = normalizeOutboundTMax(clonedReq.TMax, a.client.Timeout)
+	clonedReq.TMax = normalizeOutboundTMax(ctx, clonedReq.TMax, a.client.Timeout)
 
 	// Merge BAdv: combine request-level + endpoint-level blocked advertisers
 	if len(req.BAdv) > 0 || len(a.badv) > 0 {
@@ -265,16 +265,42 @@ func mergeSanitizedLists(requestValues, staticValues []string) []string {
 	return out
 }
 
-func normalizeOutboundTMax(current int64, clientTimeout time.Duration) int64 {
-	budgetMs := int64(clientTimeout / time.Millisecond)
+func normalizeOutboundTMax(ctx context.Context, current int64, clientTimeout time.Duration) int64 {
+	budgets := make([]int64, 0, 3)
+	if current > 0 {
+		budgets = append(budgets, current)
+	}
+	if clientBudget := bufferedBudgetMs(clientTimeout, 50); clientBudget > 0 {
+		budgets = append(budgets, clientBudget)
+	}
+	if ctx != nil {
+		if deadline, ok := ctx.Deadline(); ok {
+			if remaining := time.Until(deadline); remaining > 0 {
+				if remainingMs := int64(remaining / time.Millisecond); remainingMs > 0 {
+					budgets = append(budgets, remainingMs)
+				}
+			}
+		}
+	}
+	if len(budgets) == 0 {
+		return current
+	}
+	best := budgets[0]
+	for _, budget := range budgets[1:] {
+		if budget < best {
+			best = budget
+		}
+	}
+	return best
+}
+
+func bufferedBudgetMs(timeout time.Duration, safetyMarginMs int64) int64 {
+	budgetMs := int64(timeout / time.Millisecond)
 	if budgetMs <= 0 {
-		return current
+		return 0
 	}
-	if budgetMs > 50 {
-		budgetMs -= 50
-	}
-	if current > 0 && current < budgetMs {
-		return current
+	if safetyMarginMs > 0 && budgetMs > safetyMarginMs {
+		budgetMs -= safetyMarginMs
 	}
 	return budgetMs
 }
