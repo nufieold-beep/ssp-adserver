@@ -861,12 +861,19 @@ function toast(msg,type='success'){const el=document.createElement('div');el.cla
 function openModal(id){$(id).classList.add('active')}
 function closeModal(id){$(id).classList.remove('active')}
 function pct(a,b){return b>0?((a/b)*100).toFixed(1)+'%':'0%'}
-function promptReLogin(msg){
-  sessionStorage.removeItem('viadsmedia_auth');
+function showAppMain(){
+  $('loginOverlay').style.display='none';
+  $('appMain').style.display='flex';
+}
+function showLoginOverlay(msg=''){
   $('appMain').style.display='none';
   $('loginOverlay').style.display='flex';
-  $('loginError').textContent=msg||'Session expired. Please sign in again.';
-  $('loginError').style.display='block';
+  $('loginError').textContent=msg||'Invalid username or password';
+  $('loginError').style.display=msg?'block':'none';
+}
+function promptReLogin(msg){
+  sessionStorage.removeItem('viadsmedia_auth');
+  showLoginOverlay(msg||'Session expired. Please sign in again.');
 }
 
 function buildFunnel(containerId, data) {
@@ -1555,20 +1562,18 @@ function doLogin(){
   }).then(r=>{
     if(!r.ok) throw new Error('fail');
     return r.json();
-  }).then(d=>{
+  }).then(()=>{
     sessionStorage.setItem('viadsmedia_auth','1');
-    $('loginOverlay').style.display='none';
-    $('appMain').style.display='flex';
+    showAppMain();
     loadDashboard();
-  }).catch(e=>{
+  }).catch(()=>{
     $('loginError').style.display='block';
   });
 }
 function doLogout(){
   fetch(apiURL('/api/v1/auth/logout'),{method:'POST',credentials:'same-origin'}).catch(()=>{});
   sessionStorage.removeItem('viadsmedia_auth');
-  $('appMain').style.display='none';
-  $('loginOverlay').style.display='flex';
+  showLoginOverlay();
   $('loginUser').value='';
   $('loginPass').value='';
   $('loginError').textContent='Invalid username or password';
@@ -1589,7 +1594,6 @@ async function changePassword(){
       method:'PUT',headers:{'Content-Type':'application/json'},
       body:JSON.stringify(payload)
     });
-    // Fallback for proxies/load balancers that do not forward PUT.
     if(r.status===404){
       r=await fetch(apiURL('/api/v1/auth/password'),{
         method:'POST',headers:{'Content-Type':'application/json'},
@@ -1603,21 +1607,36 @@ async function changePassword(){
     $('cpCurrent').value='';$('cpNewUser').value='';$('cpNewPass').value='';$('cpConfirm').value='';
   }catch(e){toast(e.message||'Failed to update password','error');}
 }
+async function initializeDashboardAuth(){
+  try{
+    const headers=API_KEY?{'Authorization':'Bearer '+API_KEY}:{};
+    const res=await fetch(apiURL('/api/v1/auth/status'),{credentials:'same-origin',headers});
+    let data={};
+    try{data=await res.json();}catch(_){data={};}
+    if(!res.ok) throw new Error(data.error||`HTTP ${res.status}`);
+    if(data.authenticated||data.required===false){
+      showAppMain();
+      sessionStorage.setItem('viadsmedia_auth','1');
+      loadDashboard();
+      return;
+    }
+  }catch(e){
+    if(sessionStorage.getItem('viadsmedia_auth')==='1'){
+      showAppMain();
+      loadDashboard();
+      return;
+    }
+  }
+  sessionStorage.removeItem('viadsmedia_auth');
+  showLoginOverlay();
+}
 // Enter key on login fields
 document.addEventListener('DOMContentLoaded',function(){
   ['loginUser','loginPass'].forEach(function(id){
     $(id).addEventListener('keydown',function(e){if(e.key==='Enter')doLogin()});
   });
+  initializeDashboardAuth();
 });
-
-// ═══════════════════════════════════════════
-// INIT
-// ═══════════════════════════════════════════
-if(sessionStorage.getItem('viadsmedia_auth')==='1'){
-  $('loginOverlay').style.display='none';
-  $('appMain').style.display='flex';
-  loadDashboard();
-}
 </script>
 </body>
 </html>

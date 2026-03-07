@@ -10,15 +10,35 @@ import (
 
 const dashboardSessionCookieName = "ssp_dashboard_session"
 
+func configuredAdminAPIKey() string {
+	return strings.TrimSpace(os.Getenv("SSP_API_KEY"))
+}
+
+func adminAPIKeyRequired() bool {
+	key := configuredAdminAPIKey()
+	return key != "" && key != "change-this-to-a-secret" && key != "changeme"
+}
+
+func requestHasValidAdminAPIKey(c *fiber.Ctx) bool {
+	if !adminAPIKeyRequired() {
+		return false
+	}
+	key := configuredAdminAPIKey()
+	auth := c.Get("Authorization")
+	if auth == "" {
+		auth = c.Query("api_key")
+	}
+	return auth == "Bearer "+key || auth == key
+}
+
 // AdminAPIKey returns middleware that requires a valid API key for admin routes.
 // The key is read from the SSP_API_KEY environment variable.
 // If SSP_API_KEY is not set, requests pass through (dashboard login provides auth).
 func AdminAPIKey(s *store) fiber.Handler {
-	key := strings.TrimSpace(os.Getenv("SSP_API_KEY"))
 	return func(c *fiber.Ctx) error {
 		// If no API key is configured, allow all requests through.
 		// The dashboard login system provides its own authentication layer.
-		if key == "" || key == "change-this-to-a-secret" || key == "changeme" {
+		if !adminAPIKeyRequired() {
 			return c.Next()
 		}
 
@@ -30,11 +50,7 @@ func AdminAPIKey(s *store) fiber.Handler {
 			}
 		}
 
-		auth := c.Get("Authorization")
-		if auth == "" {
-			auth = c.Query("api_key")
-		}
-		if auth != "Bearer "+key && auth != key {
+		if !requestHasValidAdminAPIKey(c) {
 			return c.Status(401).JSON(fiber.Map{"error": "unauthorized"})
 		}
 		return c.Next()

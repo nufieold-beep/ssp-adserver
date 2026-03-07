@@ -2069,6 +2069,26 @@ func registerAnalyticsRoutes(app *fiber.App, s *store, metrics *monitor.Metrics)
 // ── Auth Routes ──
 
 func registerAuthRoutes(app *fiber.App, s *store) {
+	app.Get("/api/v1/auth/status", func(c *fiber.Ctx) error {
+		required := adminAPIKeyRequired()
+		authenticated := !required
+
+		if required && s != nil {
+			token := strings.TrimSpace(c.Cookies(dashboardSessionCookieName))
+			if token != "" && s.validateDashboardSession(token) {
+				authenticated = true
+			}
+		}
+		if !authenticated && requestHasValidAdminAPIKey(c) {
+			authenticated = true
+		}
+
+		return c.JSON(fiber.Map{
+			"required":      required,
+			"authenticated": authenticated,
+		})
+	})
+
 	// Login — validates username + password, returns success/failure
 	app.Post("/api/v1/auth/login", func(c *fiber.Ctx) error {
 		var body struct {
