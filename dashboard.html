@@ -201,7 +201,8 @@ textarea{resize:vertical;min-height:68px}
     <div class="stat-card"><div class="label">eCPM</div><div class="value" style="color:var(--accent2)" id="statEcpm">–</div></div>
     <div class="stat-card"><div class="label">Win Rate</div><div class="value" style="color:var(--green)" id="statWinRate">–</div></div>
     <div class="stat-card"><div class="label">Avg Bid Latency</div><div class="value" style="color:var(--orange)" id="statLatency">–</div></div>
-    <div class="stat-card red"><div class="label">Errors</div><div class="value" id="statErrors">–</div></div>
+    <div class="stat-card red"><div class="label">Internal Errors</div><div class="value" id="statErrors">–</div></div>
+    <div class="stat-card orange"><div class="label">Adapter Errors</div><div class="value" id="statAdapterErrors">–</div></div>
     <div class="stat-card"><div class="label">No-Bids</div><div class="value" style="color:var(--fg2)" id="statNoBids">–</div></div>
     <div class="stat-card"><div class="label">Uptime</div><div class="value" style="color:var(--fg2);font-size:16px" id="statUptime">–</div></div>
   </div>
@@ -931,6 +932,7 @@ async function loadDashboard() {
     $('statWinRate').textContent=pct(wins,wins+losses);
     $('statLatency').textContent=(o.avg_bid_latency_ms||0).toFixed(0)+'ms';
     $('statErrors').textContent=fmtNum(o.errors);
+    $('statAdapterErrors').textContent=fmtNum(o.adapter_errors||0);
     $('statNoBids').textContent=fmtNum(o.no_bids);
     $('statUptime').textContent=o.uptime||'—';
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -20,6 +21,11 @@ import (
 type fakeAdapter struct {
 	id   string
 	bids []openrtb.Bid
+}
+
+type errorAdapter struct {
+	id  string
+	err error
 }
 
 func (f *fakeAdapter) ID() string {
@@ -48,6 +54,31 @@ func (f *fakeAdapter) RequestBids(ctx context.Context, _ *openrtb.BidRequest) (*
 	bids := make([]openrtb.Bid, len(f.bids))
 	copy(bids, f.bids)
 	return &adapter.BidResult{Bids: bids}, nil
+}
+
+func (e *errorAdapter) ID() string {
+	return e.id
+}
+
+func (e *errorAdapter) Name() string {
+	return "error"
+}
+
+func (e *errorAdapter) Type() adapter.AdapterType {
+	return adapter.TypeORTB
+}
+
+func (e *errorAdapter) Supports(_ *openrtb.BidRequest) bool {
+	return true
+}
+
+func (e *errorAdapter) RequestBids(ctx context.Context, _ *openrtb.BidRequest) (*adapter.BidResult, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+	return nil, e.err
 }
 
 func TestExecuteDefersNotificationsUntilFinalizeDelivery(t *testing.T) {
@@ -143,6 +174,59 @@ func TestExecuteDefersNotificationsUntilFinalizeDelivery(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 	if billCount.Load() != 1 {
 		t.Fatalf("expected billing notice to fire once, got %d", billCount.Load())
+	}
+}
+
+func TestExecuteTracksAdapterErrorsSeparatelyFromInternalErrors(t *testing.T) {
+	reg := adapter.NewRegistry()
+	reg.Register(&errorAdapter{id: "error-adapter", err: context.DeadlineExceeded}, &adapter.AdapterConfig{ID: "error-adapter", Name: "Error Adapter", Type: adapter.TypeORTB, Endpoint: "http://unused", Status: 1})
+
+	metrics := monitor.New()
+	p := &pipeline.Pipeline{
+		Registry:    reg,
+		FloorEngine: floor.NewEngine(),
+		AQScanner:   adquality.NewScanner(),
+		Metrics:     metrics,
+		AuctionType: "first_price",
+		DefaultTMax: 100,
+	}
+
+	req := &openrtb.BidRequest{
+		ID:  "req-error",
+		Imp: []openrtb.Imp{{ID: "imp-1", BidFloor: 1.0, TagID: "tag-1"}},
+		App: &openrtb.App{Bundle: "bundle-1"},
+	}
+
+	result := p.Execute(context.Background(), req, "https://ads.example.com")
+	if !result.NoBid {
+		t.Fatal("expected no bid result when the only adapter errors")
+	}
+	if got := metrics.Errors.Load(); got != 0 {
+		t.Fatalf("expected internal error counter to remain 0, got %d", got)
+	}
+	if got := metrics.AdapterErrors.Load(); got != 1 {
+		t.Fatalf("expected adapter error counter to be 1, got %d", got)
+	}
+	if got := metrics.NoBids.Load(); got != 1 {
+		t.Fatalf("expected no-bid counter to be 1, got %d", got)
+	}
+
+	adapterEvents := metrics.GetTrafficEvents("adapter_error")
+	if len(adapterEvents) == 0 {
+		t.Fatal("expected adapter error traffic event to be recorded")
+	}
+	if !strings.Contains(adapterEvents[len(adapterEvents)-1].Details, "adapter=error-adapter") {
+		t.Fatalf("expected adapter error details to include adapter id, got %q", adapterEvents[len(adapterEvents)-1].Details)
+	}
+
+	reasons := metrics.AdapterErrorReasonCounts(10)
+	if len(reasons) == 0 || reasons[0].Reason != "error-adapter:timeout" {
+		t.Fatalf("expected timeout reason for adapter error, got %#v", reasons)
+	}
+
+	noBidReasons := metrics.NoBidReasonCounts(10)
+	if len(noBidReasons) == 0 || noBidReasons[0].Reason != "all_adapters_timed_out" {
+		t.Fatalf("expected all_adapters_timed_out no-bid reason, got %#v", noBidReasons)
 	}
 }
 

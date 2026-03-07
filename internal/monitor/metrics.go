@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -11,18 +12,21 @@ import (
 type Metrics struct {
 	mu sync.RWMutex
 
-	ErrorReasons sync.Map // map[string]*atomic.Int64
+	ErrorReasons        sync.Map // map[string]*atomic.Int64
+	AdapterErrorReasons sync.Map // map[string]*atomic.Int64
+	NoBidReasons        sync.Map // map[string]*atomic.Int64
 
 	// Global counters
-	AdRequests   atomic.Int64
-	AdOpps       atomic.Int64
-	Impressions  atomic.Int64
-	Completions  atomic.Int64
-	Clicks       atomic.Int64
-	NoBids       atomic.Int64
-	Errors       atomic.Int64
-	TotalSpendMu sync.Mutex
-	TotalSpend   float64
+	AdRequests    atomic.Int64
+	AdOpps        atomic.Int64
+	Impressions   atomic.Int64
+	Completions   atomic.Int64
+	Clicks        atomic.Int64
+	NoBids        atomic.Int64
+	Errors        atomic.Int64
+	AdapterErrors atomic.Int64
+	TotalSpendMu  sync.Mutex
+	TotalSpend    float64
 
 	// VAST event counters
 	VastStarts atomic.Int64
@@ -111,14 +115,24 @@ func (m *Metrics) RecordVastSkip()   { m.VastSkips.Add(1) }
 func (m *Metrics) RecordVastError()  { m.VastErrors.Add(1) }
 
 func (m *Metrics) RecordErrorReason(reason string) {
-	reason = strings.TrimSpace(reason)
-	if reason == "" {
+	if !incrementReasonCounter(&m.ErrorReasons, reason) {
 		m.RecordError()
 		return
 	}
-	val, _ := m.ErrorReasons.LoadOrStore(reason, &atomic.Int64{})
-	val.(*atomic.Int64).Add(1)
 	m.RecordError()
+}
+
+func (m *Metrics) RecordAdapterErrorReason(reason string) {
+	if !incrementReasonCounter(&m.AdapterErrorReasons, reason) {
+		incrementReasonCounter(&m.AdapterErrorReasons, "unknown")
+	}
+	m.AdapterErrors.Add(1)
+}
+
+func (m *Metrics) RecordNoBidReason(reason string) {
+	if !incrementReasonCounter(&m.NoBidReasons, reason) {
+		incrementReasonCounter(&m.NoBidReasons, "unknown")
+	}
 }
 
 func (m *Metrics) RecordSpend(cpm float64) {
@@ -214,6 +228,61 @@ func (m *Metrics) snapshotTrafficEventsLocked() []TrafficEvent {
 	return out
 }
 
+type ReasonCount struct {
+	Reason string `json:"reason"`
+	Count  int64  `json:"count"`
+}
+
+func (m *Metrics) ErrorReasonCounts(limit int) []ReasonCount {
+	return reasonCounts(&m.ErrorReasons, limit)
+}
+
+func (m *Metrics) AdapterErrorReasonCounts(limit int) []ReasonCount {
+	return reasonCounts(&m.AdapterErrorReasons, limit)
+}
+
+func (m *Metrics) NoBidReasonCounts(limit int) []ReasonCount {
+	return reasonCounts(&m.NoBidReasons, limit)
+}
+
+func incrementReasonCounter(reasonMap *sync.Map, reason string) bool {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return false
+	}
+	val, _ := reasonMap.LoadOrStore(reason, &atomic.Int64{})
+	val.(*atomic.Int64).Add(1)
+	return true
+}
+
+func reasonCounts(reasonMap *sync.Map, limit int) []ReasonCount {
+	counts := make([]ReasonCount, 0)
+	reasonMap.Range(func(key, value any) bool {
+		reason, ok := key.(string)
+		if !ok || reason == "" {
+			return true
+		}
+		counter, ok := value.(*atomic.Int64)
+		if !ok {
+			return true
+		}
+		counts = append(counts, ReasonCount{Reason: reason, Count: counter.Load()})
+		return true
+	})
+
+	sort.Slice(counts, func(i, j int) bool {
+		if counts[i].Count == counts[j].Count {
+			return counts[i].Reason < counts[j].Reason
+		}
+		return counts[i].Count > counts[j].Count
+	})
+
+	if limit > 0 && len(counts) > limit {
+		counts = counts[:limit]
+	}
+	return counts
+}
+
 // GetCampaignMetric returns (or creates) metrics for a campaign.
 func (m *Metrics) GetCampaignMetric(campaignID int) *CampaignMetric {
 	val, ok := m.CampaignMetrics.Load(campaignID)
@@ -234,6 +303,7 @@ type Overview struct {
 	Clicks        int64   `json:"clicks"`
 	NoBids        int64   `json:"no_bids"`
 	Errors        int64   `json:"errors"`
+	AdapterErrors int64   `json:"adapter_errors"`
 	TotalSpend    float64 `json:"total_spend"`
 	Uptime        string  `json:"uptime"`
 	AvgBidLatency float64 `json:"avg_bid_latency_ms"`
@@ -256,6 +326,7 @@ func (m *Metrics) GetOverview() Overview {
 		Clicks:        m.Clicks.Load(),
 		NoBids:        m.NoBids.Load(),
 		Errors:        m.Errors.Load(),
+		AdapterErrors: m.AdapterErrors.Load(),
 		TotalSpend:    spend,
 		Uptime:        time.Since(m.StartTime).Round(time.Second).String(),
 		AvgBidLatency: m.AvgBidLatency(),

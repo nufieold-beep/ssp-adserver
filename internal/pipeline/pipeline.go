@@ -11,6 +11,7 @@ import (
 	"ssp/internal/monitor"
 	"ssp/internal/openrtb"
 	"ssp/internal/vast"
+	"strings"
 	"time"
 )
 
@@ -78,7 +79,9 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 
 	p.Metrics.AddTrafficEvent(monitor.TrafficEvent{
 		Type: "ortb_request", RequestID: req.ID, Env: detectRequestEnvironment(req),
-		Details: fmt.Sprintf("bundle=%s tag=%s", bundle, req.Imp[0].TagID),
+		Details: fmt.Sprintf("bundle=%s tag=%s floor=%.2f", bundle, req.Imp[0].TagID, req.Imp[0].BidFloor),
+		Bundle:  bundle,
+		Supply:  req.Imp[0].TagID,
 	})
 
 	// ── Stage 2: Dynamic floor optimization ──
@@ -129,6 +132,17 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 			if br.TimedOut {
 				adapterTimeoutCount++
 			}
+			if p.Metrics != nil {
+				p.Metrics.RecordAdapterErrorReason(classifyAdapterErrorReason(br.AdapterID, br.Error, br.TimedOut))
+				p.Metrics.AddTrafficEvent(monitor.TrafficEvent{
+					Type:      "adapter_error",
+					RequestID: req.ID,
+					Env:       detectRequestEnvironment(req),
+					Details:   formatAdapterErrorDetail(br.AdapterID, br.Error, br.TimedOut),
+					Bundle:    bundle,
+					Supply:    req.Imp[0].TagID,
+				})
+			}
 			if hasErrorSubscriber {
 				p.Bus.Publish(eventbus.Event{Type: eventbus.EvtError, Data: map[string]interface{}{
 					"request_id": req.ID, "adapter": br.AdapterID, "error": br.Error.Error(),
@@ -161,18 +175,15 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 
 	if len(candidateBids) == 0 {
 		reasonDetails := buildNoBidReasonDetails(len(bidResults), adapterErrorCount, adapterTimeoutCount, adapterNoBidCount)
-
-		if adapterErrorCount > 0 {
-			p.Metrics.RecordError()
-			p.Metrics.AddTrafficEvent(monitor.TrafficEvent{
-				Type: "adapter_error", RequestID: req.ID, Env: detectRequestEnvironment(req),
-				Details: reasonDetails,
-			})
+		if p.Metrics != nil {
+			p.Metrics.RecordNoBidReason(buildNoBidReasonCode(len(bidResults), adapterErrorCount, adapterTimeoutCount, adapterNoBidCount))
 		}
 		p.Metrics.RecordNoBid()
 		p.Metrics.AddTrafficEvent(monitor.TrafficEvent{
 			Type: "no_bid", RequestID: req.ID, Env: detectRequestEnvironment(req),
-			Details: reasonDetails,
+			Details: fmt.Sprintf("%s floor=%.2f", reasonDetails, req.Imp[0].BidFloor),
+			Bundle:  bundle,
+			Supply:  req.Imp[0].TagID,
 		})
 		result.NoBid = true
 		result.VAST = vast.BuildNoAd()
@@ -183,7 +194,18 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 	// ── Stage 5: Ad quality / brand safety scan ──
 	candidateBids = p.AQScanner.Filter(candidateBids, req)
 	if len(candidateBids) == 0 {
+		if p.Metrics != nil {
+			p.Metrics.RecordNoBidReason("filtered_by_ad_quality")
+		}
 		p.Metrics.RecordNoBid()
+		p.Metrics.AddTrafficEvent(monitor.TrafficEvent{
+			Type:      "no_bid",
+			RequestID: req.ID,
+			Env:       detectRequestEnvironment(req),
+			Details:   fmt.Sprintf("filtered_by_ad_quality floor=%.2f", req.Imp[0].BidFloor),
+			Bundle:    bundle,
+			Supply:    req.Imp[0].TagID,
+		})
 		result.NoBid = true
 		result.VAST = vast.BuildNoAd()
 		result.TotalLatency = time.Since(start)
@@ -203,7 +225,18 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 	}
 
 	if auctionResult.Winner == nil {
+		if p.Metrics != nil {
+			p.Metrics.RecordNoBidReason("no_auction_winner")
+		}
 		p.Metrics.RecordNoBid()
+		p.Metrics.AddTrafficEvent(monitor.TrafficEvent{
+			Type:      "no_bid",
+			RequestID: req.ID,
+			Env:       detectRequestEnvironment(req),
+			Details:   fmt.Sprintf("no_auction_winner floor=%.2f", req.Imp[0].BidFloor),
+			Bundle:    bundle,
+			Supply:    req.Imp[0].TagID,
+		})
 		result.NoBid = true
 		result.VAST = vast.BuildNoAd()
 		result.TotalLatency = time.Since(start)
@@ -292,4 +325,73 @@ func buildNoBidReasonDetails(totalAdapters, errorCount, timeoutCount, noBidCount
 	}
 	return fmt.Sprintf("no winning bids: adapters=%d errors=%d timeouts=%d explicit_no_bids=%d",
 		totalAdapters, errorCount, timeoutCount, noBidCount)
+}
+
+func buildNoBidReasonCode(totalAdapters, errorCount, timeoutCount, noBidCount int) string {
+	switch {
+	case totalAdapters == 0:
+		return "no_eligible_adapters"
+	case errorCount == totalAdapters && timeoutCount == totalAdapters:
+		return "all_adapters_timed_out"
+	case errorCount == totalAdapters:
+		return "all_adapters_errored"
+	case noBidCount == totalAdapters:
+		return "all_adapters_no_bid"
+	default:
+		return "mixed_adapter_outcomes_no_winner"
+	}
+}
+
+func formatAdapterErrorDetail(adapterID string, err error, timedOut bool) string {
+	parts := []string{fmt.Sprintf("adapter=%s", adapterID)}
+	if timedOut {
+		parts = append(parts, "timeout=true")
+	}
+	if err != nil {
+		parts = append(parts, fmt.Sprintf("error=%s", strings.TrimSpace(err.Error())))
+	}
+	return strings.Join(parts, " ")
+}
+
+func classifyAdapterErrorReason(adapterID string, err error, timedOut bool) string {
+	reason := "unknown"
+	if timedOut {
+		reason = "timeout"
+	} else if err != nil {
+		msg := strings.ToLower(err.Error())
+		switch {
+		case strings.Contains(msg, "context deadline exceeded"), strings.Contains(msg, "client.timeout"), strings.Contains(msg, "timeout"):
+			reason = "timeout"
+		case strings.Contains(msg, "http 400"):
+			reason = "http_400"
+		case strings.Contains(msg, "http 401"):
+			reason = "http_401"
+		case strings.Contains(msg, "http 403"):
+			reason = "http_403"
+		case strings.Contains(msg, "http 404"):
+			reason = "http_404"
+		case strings.Contains(msg, "http 429"):
+			reason = "http_429"
+		case strings.Contains(msg, "http 500"):
+			reason = "http_500"
+		case strings.Contains(msg, "http 502"):
+			reason = "http_502"
+		case strings.Contains(msg, "http 503"):
+			reason = "http_503"
+		case strings.Contains(msg, "http 504"):
+			reason = "http_504"
+		case strings.Contains(msg, "invalid xml"):
+			reason = "invalid_xml"
+		case strings.Contains(msg, "non-vast payload"):
+			reason = "non_vast_payload"
+		case strings.Contains(msg, "invalid character"), strings.Contains(msg, "cannot unmarshal"), strings.Contains(msg, "decode"):
+			reason = "decode_error"
+		default:
+			reason = "request_error"
+		}
+	}
+	if strings.TrimSpace(adapterID) == "" {
+		return reason
+	}
+	return adapterID + ":" + reason
 }

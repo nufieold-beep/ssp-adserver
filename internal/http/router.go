@@ -1335,8 +1335,8 @@ func NewRouterWithDeps(cfg *config.Config, metrics *monitor.Metrics, configPath 
 	app.Get("/metrics", func(c *fiber.Ctx) error {
 		o := metrics.GetOverview()
 		return c.Type("text").SendString(fmt.Sprintf(
-			"# SSP Metrics\nssp_ad_requests_total %d\nssp_impressions_total %d\nssp_completions_total %d\nssp_spend_total %.2f\nssp_errors_total %d\nssp_no_bids_total %d\nssp_wins_total %d\nssp_losses_total %d\nssp_vast_starts_total %d\nssp_vast_errors_total %d\nssp_avg_bid_latency_ms %.1f\n",
-			o.AdRequests, o.Impressions, o.Completions, o.TotalSpend, o.Errors, o.NoBids,
+			"# SSP Metrics\nssp_ad_requests_total %d\nssp_impressions_total %d\nssp_completions_total %d\nssp_spend_total %.2f\nssp_errors_total %d\nssp_adapter_errors_total %d\nssp_no_bids_total %d\nssp_wins_total %d\nssp_losses_total %d\nssp_vast_starts_total %d\nssp_vast_errors_total %d\nssp_avg_bid_latency_ms %.1f\n",
+			o.AdRequests, o.Impressions, o.Completions, o.TotalSpend, o.Errors, o.AdapterErrors, o.NoBids,
 			o.BidWins, o.BidLosses, o.VastStarts, o.VastErrors, o.AvgBidLatency,
 		))
 	})
@@ -1959,6 +1959,19 @@ func registerAnalyticsRoutes(app *fiber.App, s *store, metrics *monitor.Metrics)
 			"total_events": metrics.VastStarts.Load() + metrics.Completions.Load(),
 			"by_campaign":  make([]fiber.Map, 0),
 		})
+	})
+
+	app.Get("/api/v1/analytics/reports/error-reasons", func(c *fiber.Ctx) error {
+		limit := c.QueryInt("limit", 20)
+		return c.JSON(fiber.Map{
+			"internal": metrics.ErrorReasonCounts(limit),
+			"adapter":  metrics.AdapterErrorReasonCounts(limit),
+		})
+	})
+
+	app.Get("/api/v1/analytics/reports/no-bid-reasons", func(c *fiber.Ctx) error {
+		limit := c.QueryInt("limit", 20)
+		return c.JSON(metrics.NoBidReasonCounts(limit))
 	})
 
 	app.Get("/api/v1/analytics/reports/creative", func(c *fiber.Ctx) error {
@@ -2700,6 +2713,7 @@ func handlePipelineServeResult(c *fiber.Ctx, p *pipeline.Pipeline, metrics *moni
 	campaignID, campaignName, deliveryStatus, allowed := s.reserveCampaignDelivery(req, result.Winner, result.WinPrice)
 	if !allowed {
 		metrics.RecordNoBid()
+		metrics.RecordNoBidReason("delivery_" + deliveryStatus)
 		metrics.AddTrafficEvent(monitor.TrafficEvent{
 			Type:      "delivery_block",
 			RequestID: req.ID,
