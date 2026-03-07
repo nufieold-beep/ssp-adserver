@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -9,6 +10,8 @@ import (
 // Metrics tracks real-time SSP metrics in memory.
 type Metrics struct {
 	mu sync.RWMutex
+
+	ErrorReasons sync.Map // map[string]*atomic.Int64
 
 	// Global counters
 	AdRequests   atomic.Int64
@@ -106,6 +109,17 @@ func (m *Metrics) RecordVastMid()    { m.VastMid.Add(1) }
 func (m *Metrics) RecordVastQ3()     { m.VastQ3.Add(1) }
 func (m *Metrics) RecordVastSkip()   { m.VastSkips.Add(1) }
 func (m *Metrics) RecordVastError()  { m.VastErrors.Add(1) }
+
+func (m *Metrics) RecordErrorReason(reason string) {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		m.RecordError()
+		return
+	}
+	val, _ := m.ErrorReasons.LoadOrStore(reason, &atomic.Int64{})
+	val.(*atomic.Int64).Add(1)
+	m.RecordError()
+}
 
 func (m *Metrics) RecordSpend(cpm float64) {
 	m.TotalSpendMu.Lock()

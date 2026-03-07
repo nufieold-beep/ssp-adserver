@@ -2,6 +2,7 @@ package adapter
 
 import (
 	"context"
+	"encoding/xml"
 	"fmt"
 	"net/http"
 	"ssp/internal/httputil"
@@ -87,6 +88,10 @@ func (a *VASTAdapter) RequestBids(ctx context.Context, req *openrtb.BidRequest) 
 	if !strings.Contains(lowAdm, "<vast") && !strings.Contains(lowAdm, "<vmap") {
 		return nil, fmt.Errorf("vast adapter %s returned non-VAST payload", a.id)
 	}
+	var xmlProbe struct{}
+	if err := xml.Unmarshal(body, &xmlProbe); err != nil {
+		return nil, fmt.Errorf("vast adapter %s returned invalid XML: %w", a.id, err)
+	}
 
 	price := a.cpm
 
@@ -97,7 +102,7 @@ func (a *VASTAdapter) RequestBids(ctx context.Context, req *openrtb.BidRequest) 
 	}
 
 	bid := openrtb.Bid{
-		ID:     "vast-" + a.id,
+		ID:     fmt.Sprintf("vast-%s-%s", a.id, req.ID),
 		ImpID:  impID,
 		Price:  price,
 		Margin: a.margin,

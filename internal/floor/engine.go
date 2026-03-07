@@ -101,7 +101,7 @@ func (e *Engine) Calculate(req *openrtb.BidRequest) float64 {
 		}
 	}
 
-	// Adaptive floor: 70% of rolling average (same as existing DynamicFloor)
+	// Adaptive floor: 70% of rolling average.
 	if e.avgPrice > 0 {
 		return e.avgPrice * 0.7
 	}

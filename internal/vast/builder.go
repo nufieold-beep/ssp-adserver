@@ -22,9 +22,10 @@ var alpha3To2Country = map[string]string{
 type AdmType int
 
 const (
-	AdmInline      AdmType = iota // Media file URL → <InLine> with <MediaFile>
-	AdmWrapper                    // VAST tag URL → <Wrapper> with <VASTAdTagURI>
-	AdmPassthrough                // Complete VAST XML → inject our tracking pixels
+	AdmInvalid     AdmType = iota
+	AdmInline              // Media file URL → <InLine> with <MediaFile>
+	AdmWrapper             // VAST tag URL → <Wrapper> with <VASTAdTagURI>
+	AdmPassthrough         // Complete VAST XML → inject our tracking pixels
 )
 
 // mediaExtensions maps file extensions to their video MIME types.
@@ -63,25 +64,37 @@ func isMediaExt(rawURL string) bool {
 func DetectAdmType(adm string) AdmType {
 	trimmed := strings.TrimSpace(adm)
 	if trimmed == "" {
-		return AdmInline
+		return AdmInvalid
 	}
 	lower := strings.ToLower(trimmed)
 	if strings.HasPrefix(lower, "<?xml") || strings.HasPrefix(lower, "<vast") || strings.HasPrefix(lower, "<vmap") {
 		return AdmPassthrough
 	}
-	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") || strings.HasPrefix(trimmed, "//") {
+	if strings.HasPrefix(trimmed, "//") {
 		if isMediaExt(trimmed) {
 			return AdmInline
 		}
 		return AdmWrapper
 	}
-	return AdmInline
+	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
+		if isMediaExt(trimmed) {
+			return AdmInline
+		}
+		return AdmWrapper
+	}
+	return AdmInvalid
 }
 
 // Build creates a VAST 3.0 XML response from a winning bid.
 // baseURL is the publicly-reachable origin (e.g. "https://ads1.viadsmedia.com").
 // req provides the full request context for enriched tracking pixels.
 func Build(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) string {
+	if bid == nil {
+		return ""
+	}
+	if strings.TrimSpace(bid.Adm) == "" {
+		return ""
+	}
 	if baseURL == "" {
 		baseURL = BaseURL
 	}
@@ -90,8 +103,10 @@ func Build(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) string {
 		return buildPassthrough(bid, req, baseURL)
 	case AdmWrapper:
 		return buildWrapper(bid, req, baseURL)
-	default:
+	case AdmInline:
 		return buildInline(bid, req, baseURL)
+	default:
+		return ""
 	}
 }
 
@@ -130,16 +145,6 @@ func writeImpressionTag(sb *strings.Builder, pixelURL string) {
 	sb.WriteString("   <Impression><![CDATA[")
 	sb.WriteString(pixelURL)
 	sb.WriteString("]]></Impression>\n")
-}
-
-// dspNoticePixels appends NURL and BURL as <Impression> tags with macros resolved.
-func dspNoticePixels(sb *strings.Builder, bid *openrtb.Bid) {
-	if bid.NURL != "" {
-		writeImpressionTag(sb, bid.SubstituteMacros(bid.NURL))
-	}
-	if bid.BURL != "" {
-		writeImpressionTag(sb, bid.SubstituteMacros(bid.BURL))
-	}
 }
 
 // Pre-allocated tracking event definitions — shared across all requests.
@@ -205,19 +210,25 @@ func impressionBlock(evtBase string, bid *openrtb.Bid, req *openrtb.BidRequest) 
 	}
 
 	params := url.Values{
-		"rid":   {resolveRequestID(req)},
-		"cmp":   {bid.Seat},
-		"crid":  {bid.CrID},
-		"ctry":  {ctry},
-		"ip":    {ip},
-		"env":   {deviceEnv(deviceType)},
-		"sr":    {supplyRef(evtBase)},
-		"bndl":  {bndl},
-		"adom":  {adom},
-		"price": {strconv.FormatFloat(bid.Price, 'f', -1, 64)},
+		"bid":  {bid.ID},
+		"rid":  {resolveRequestID(req)},
+		"cmp":  {bid.Seat},
+		"crid": {bid.CrID},
+		"ctry": {ctry},
+		"ip":   {ip},
+		"env":  {deviceEnv(deviceType)},
+		"sr":   {supplyRef(evtBase)},
+		"bndl": {bndl},
+		"adom": {adom},
+		"price": {strconv.FormatFloat(func() float64 {
+			price := bid.WinPrice
+			if price <= 0 {
+				price = bid.Price
+			}
+			return price
+		}(), 'f', -1, 64)},
 	}
 	writeImpressionTag(&sb, evtBase+"/impression?"+params.Encode())
-	dspNoticePixels(&sb, bid)
 
 	return sb.String()
 }

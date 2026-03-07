@@ -1,7 +1,9 @@
 package validate
 
 import (
-	"errors"
+	"fmt"
+	"strings"
+
 	"ssp/internal/openrtb"
 )
 
@@ -11,33 +13,43 @@ import (
 // - must include at least one video imp for CTV/in-app video
 func Request(req *openrtb.BidRequest) error {
 	if req == nil {
-		return errors.New("request is nil")
+		return fmt.Errorf("missing bid request")
 	}
 	if len(req.Imp) == 0 {
-		return errors.New("must have at least one imp")
+		return fmt.Errorf("missing impressions")
+	}
+	imp := req.Imp[0]
+	if imp.Video == nil {
+		return fmt.Errorf("missing video impression")
+	}
+	if imp.Video.W == nil || imp.Video.H == nil || *imp.Video.W <= 0 || *imp.Video.H <= 0 {
+		return fmt.Errorf("invalid video size")
+	}
+	if imp.Video.MaxDuration > 0 && imp.Video.MinDuration > imp.Video.MaxDuration {
+		return fmt.Errorf("invalid video duration range")
+	}
+	if len(imp.Video.MIMEs) == 0 {
+		return fmt.Errorf("missing video mimes")
 	}
 	if req.Device == nil {
-		req.Device = &openrtb.Device{}
+		return fmt.Errorf("missing device")
 	}
 
-	// Some CTV integrations can omit IP at the edge (privacy/proxy setups).
-	// Keep the request serviceable instead of hard-failing to no-fill.
-	if req.Device.IP == "" {
+	if strings.TrimSpace(req.Device.IP) == "" {
 		req.Device.IP = "0.0.0.0"
 	}
-
-	hasVideoImp := false
-	for i := range req.Imp {
-		if req.Imp[i].Video == nil {
-			continue
-		}
-		hasVideoImp = true
-		if len(req.Imp[i].Video.MIMEs) == 0 {
-			req.Imp[i].Video.MIMEs = []string{"video/mp4"}
-		}
+	if req.Device.DeviceType == 0 {
+		return fmt.Errorf("missing device type")
 	}
-	if !hasVideoImp {
-		return errors.New("at least one video imp is required for CTV/in-app")
+	if req.App == nil && req.Site == nil {
+		return fmt.Errorf("missing app/site context")
+	}
+	if req.App != nil {
+		bundle := strings.TrimSpace(req.App.Bundle)
+		appID := strings.TrimSpace(req.App.ID)
+		if bundle == "" && appID == "" {
+			return fmt.Errorf("missing app bundle/id")
+		}
 	}
 	return nil
 }

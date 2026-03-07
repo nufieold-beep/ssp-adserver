@@ -32,18 +32,19 @@ type Pipeline struct {
 
 // Result holds the output of the full pipeline execution.
 type Result struct {
-	Winner       *openrtb.Bid
-	WinPrice     float64
-	Losers       []openrtb.Bid
-	VAST         string
-	RequestID    string
-	AdapterID    string
-	AuctionType  string
-	BidLatency   time.Duration
-	TotalLatency time.Duration
-	NoBid        bool
-	Error        error
-	BaseURL      string // populated by caller for tracking URLs
+	Winner               *openrtb.Bid
+	WinPrice             float64
+	Losers               []openrtb.Bid
+	VAST                 string
+	RequestID            string
+	AdapterID            string
+	AuctionType          string
+	BidLatency           time.Duration
+	TotalLatency         time.Duration
+	NoBid                bool
+	Error                error
+	BaseURL              string // populated by caller for tracking URLs
+	NotificationsPending bool
 }
 
 // Execute runs the full ad serving pipeline for a single request.
@@ -209,24 +210,17 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 		return result
 	}
 
-	// ── Stage 7: Win/Loss notification ──
+	// ── Stage 7: Build final VAST before any notices are fired ──
 	winner := auctionResult.Winner
-	auction.FireWinNotice(winner)
-	for i := range auctionResult.Losers {
-		auction.FireLossNotice(&auctionResult.Losers[i])
-		p.Metrics.RecordLoss()
-	}
-
-	// ── Stage 8: Build VAST response ──
 	xml := vast.Build(winner, req, result.BaseURL)
 	if xml == "" {
 		p.Metrics.RecordError()
-		result.Error = fmt.Errorf("VAST build failed for bid %s", winner.ID)
+		result.Error = fmt.Errorf("vast build failed for bid %s", winner.ID)
 		result.TotalLatency = time.Since(start)
 		return result
 	}
 
-	// ── Stage 9: Billing & metrics (impression counted on client-side pixel fire) ──
+	// ── Stage 8: Record provisional winner; final notices happen after delivery approval ──
 	p.Metrics.RecordWin(auctionResult.WinPrice)
 	p.Metrics.RecordSpend(winner.ReportingPrice(auctionResult.WinPrice))
 
@@ -246,8 +240,27 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 	if result.AdapterID == "" {
 		result.AdapterID = winner.Seat
 	}
+	result.NotificationsPending = true
 	result.TotalLatency = time.Since(start)
 	return result
+}
+
+func (p *Pipeline) FinalizeDelivery(result *Result) {
+	if p == nil || result == nil || !result.NotificationsPending || result.Winner == nil {
+		return
+	}
+
+	auction.FireWinNotice(result.Winner)
+	auction.RegisterBillableNotice(result.Winner)
+
+	for i := range result.Losers {
+		auction.FireLossNotice(&result.Losers[i])
+		if p.Metrics != nil {
+			p.Metrics.RecordLoss()
+		}
+	}
+
+	result.NotificationsPending = false
 }
 
 func detectRequestEnvironment(req *openrtb.BidRequest) string {

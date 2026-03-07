@@ -5,6 +5,7 @@ import (
 	"log"
 	"ssp/internal/httputil"
 	"ssp/internal/openrtb"
+	"sync"
 	"time"
 )
 
@@ -15,11 +16,20 @@ type AuctionResult struct {
 	Losers   []openrtb.Bid
 }
 
+type billableNoticeEntry struct {
+	url     string
+	expires time.Time
+}
+
+var (
+	billableNoticeMu sync.Mutex
+	billableNotices  = make(map[string]billableNoticeEntry)
+)
+
 // Run executes the full auction. auctionType is "first_price" or "second_price".
 func Run(bids []openrtb.Bid, floor float64, auctionType string) *AuctionResult {
 	result := &AuctionResult{}
 
-	// Filter valid bids
 	var eligibleBids []openrtb.Bid
 	for i := range bids {
 		bid := &bids[i]
@@ -30,7 +40,7 @@ func Run(bids []openrtb.Bid, floor float64, auctionType string) *AuctionResult {
 		if bid.Price < floor {
 			continue
 		}
-		if bid.Adm == "" && bid.NURL == "" {
+		if !openrtb.IsRenderableBid(*bid) {
 			continue
 		}
 		eligibleBids = append(eligibleBids, *bid)
@@ -86,7 +96,7 @@ func SelectWinner(bids []openrtb.Bid, floor float64) *openrtb.Bid {
 // FireWinNotice sends the nurl (win notice) to the DSP asynchronously.
 // Substitutes ${AUCTION_PRICE} and other macros before calling.
 func FireWinNotice(bid *openrtb.Bid) {
-	if bid.NURL == "" {
+	if bid == nil || bid.NURL == "" {
 		return
 	}
 	url := bid.SubstituteMacros(bid.NURL)
@@ -96,16 +106,54 @@ func FireWinNotice(bid *openrtb.Bid) {
 // FireBillingNotice sends the burl (billing URL) to the DSP asynchronously.
 // Called when a billable event occurs (e.g., ad impression rendered).
 func FireBillingNotice(bid *openrtb.Bid) {
-	if bid.BURL == "" {
+	if bid == nil || bid.BURL == "" {
 		return
 	}
 	url := bid.SubstituteMacros(bid.BURL)
 	go fireURL(url)
 }
 
+// RegisterBillableNotice stores a billable notice URL to be fired later
+// on billable event callbacks (e.g., impression).
+func RegisterBillableNotice(bid *openrtb.Bid) {
+	if bid == nil || bid.ID == "" || bid.BURL == "" {
+		return
+	}
+	entry := billableNoticeEntry{
+		url:     bid.SubstituteMacros(bid.BURL),
+		expires: time.Now().Add(30 * time.Minute),
+	}
+
+	billableNoticeMu.Lock()
+	billableNotices[bid.ID] = entry
+	billableNoticeMu.Unlock()
+}
+
+// FireBillingNoticeByBidID fires and removes the stored billable notice URL.
+func FireBillingNoticeByBidID(bidID string) {
+	if bidID == "" {
+		return
+	}
+
+	billableNoticeMu.Lock()
+	entry, ok := billableNotices[bidID]
+	if ok {
+		delete(billableNotices, bidID)
+	}
+	billableNoticeMu.Unlock()
+
+	if !ok {
+		return
+	}
+	if time.Now().After(entry.expires) {
+		return
+	}
+	go fireURL(entry.url)
+}
+
 // FireLossNotice sends the lurl (loss notice) to losing DSPs asynchronously.
 func FireLossNotice(bid *openrtb.Bid) {
-	if bid.LURL == "" {
+	if bid == nil || bid.LURL == "" {
 		return
 	}
 	url := bid.SubstituteMacros(bid.LURL)

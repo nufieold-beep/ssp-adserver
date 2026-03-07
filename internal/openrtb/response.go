@@ -1,6 +1,7 @@
 package openrtb
 
 import (
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -60,6 +61,39 @@ func bidFromPrebid(in openrtb2.Bid, seat string) Bid {
 	}
 
 	return out
+}
+
+// IsRenderableBid returns true only if the bid has playable ad markup.
+// nurl/burl/lurl are notices, not creatives, so they do NOT make a bid playable.
+func IsRenderableBid(b Bid) bool {
+	return HasRenderableAdm(b.Adm)
+}
+
+// HasRenderableAdm validates whether Adm is enough to build and serve a playable VAST.
+func HasRenderableAdm(adm string) bool {
+	trimmed := strings.TrimSpace(adm)
+	if trimmed == "" {
+		return false
+	}
+
+	lower := strings.ToLower(trimmed)
+	if strings.HasPrefix(lower, "<?xml") || strings.HasPrefix(lower, "<vast") || strings.HasPrefix(lower, "<vmap") {
+		return true
+	}
+
+	if strings.HasPrefix(trimmed, "//") {
+		return true
+	}
+
+	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
+		u, err := url.Parse(trimmed)
+		if err != nil || u.Host == "" {
+			return false
+		}
+		return true
+	}
+
+	return false
 }
 
 // SubstituteMacros replaces OpenRTB auction macros in a URL.
@@ -133,10 +167,11 @@ func replaceMacro(s, macro, val string) string {
 
 // ensureScheme prepends https:// if the URL has no scheme.
 func ensureScheme(u string) string {
-	if len(u) >= 7 && (u[:7] == "http://" || u[:8] == "https://") {
+	lower := strings.ToLower(u)
+	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
 		return u
 	}
-	if len(u) >= 2 && u[:2] == "//" {
+	if strings.HasPrefix(u, "//") {
 		return "https:" + u
 	}
 	return "https://" + u
@@ -173,18 +208,21 @@ func ValidateBidResponse(resp *openrtb2.BidResponse, req *BidRequest) []Bid {
 
 	var valid []Bid
 	for _, sb := range resp.SeatBid {
-		for _, bid := range sb.Bid {
-			floor, ok := impIDs[bid.ImpID]
+		for _, rawBid := range sb.Bid {
+			floor, ok := impIDs[rawBid.ImpID]
 			if !ok {
 				continue
 			}
-			if bid.Price < floor {
+			if rawBid.Price < floor {
 				continue
 			}
-			if bid.AdM == "" && bid.NURL == "" {
+
+			normalized := bidFromPrebid(rawBid, sb.Seat)
+			if !IsRenderableBid(normalized) {
 				continue
 			}
-			valid = append(valid, bidFromPrebid(bid, sb.Seat))
+
+			valid = append(valid, normalized)
 		}
 	}
 	return valid
