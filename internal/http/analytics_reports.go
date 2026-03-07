@@ -377,25 +377,10 @@ func (s *store) loadMetricsExportBucketsLocked(buckets []metricsExportBucket) {
 	s.metricsExportBuckets = make(map[string]metricsExportBucket, len(buckets))
 	s.metricsExportDelivery = make(map[string]metricsExportDeliveryContext)
 	for _, bucket := range buckets {
-		hour := bucket.Hour.UTC().Truncate(time.Hour)
-		if hour.IsZero() {
+		bucket = s.normalizeMetricsExportBucketLocked(bucket)
+		if bucket.Hour.IsZero() {
 			continue
 		}
-		bucket.Hour = hour
-		if bucket.DemandEndpointID <= 0 && bucket.LegacyCampaignID > 0 {
-			bucket.DemandEndpointID = bucket.LegacyCampaignID
-		}
-		if bucket.SourceIDRevenue <= 0 && bucket.LegacyChannelRevenue > 0 {
-			bucket.SourceIDRevenue = bucket.LegacyChannelRevenue
-		}
-		if bucket.SourceIDRevenue <= 0 && bucket.LegacySourceMarginRevenue > 0 {
-			bucket.SourceIDRevenue = metricsSupplyRevenue(bucket.TotalRevenue, bucket.LegacySourceMarginRevenue)
-		}
-		bucket.LegacyCampaignID = 0
-		bucket.LegacySourceMarginRevenue = 0
-		bucket.LegacyChannelRevenue = 0
-		bucket.CountryCode = normalizeMetricsCountryCode(bucket.CountryCode)
-		bucket.BundleID = normalizeMetricsBundleID(bucket.BundleID)
 		s.metricsExportBuckets[metricsExportBucketKey(bucket)] = bucket
 	}
 }
@@ -405,7 +390,12 @@ func (s *store) snapshotMetricsExportBucketsLocked() []metricsExportBucket {
 		return nil
 	}
 	out := make([]metricsExportBucket, 0, len(s.metricsExportBuckets))
-	for _, bucket := range s.metricsExportBuckets {
+	for key, bucket := range s.metricsExportBuckets {
+		normalized := s.normalizeMetricsExportBucketLocked(bucket)
+		if normalized != bucket {
+			s.metricsExportBuckets[key] = normalized
+			bucket = normalized
+		}
 		out = append(out, bucket)
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -433,6 +423,45 @@ func (s *store) snapshotMetricsExportBuckets() []metricsExportBucket {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.snapshotMetricsExportBucketsLocked()
+}
+
+func (s *store) normalizeMetricsExportBucketLocked(bucket metricsExportBucket) metricsExportBucket {
+	hour := bucket.Hour.UTC().Truncate(time.Hour)
+	if hour.IsZero() {
+		return metricsExportBucket{}
+	}
+	bucket.Hour = hour
+	if bucket.DemandEndpointID <= 0 && bucket.LegacyCampaignID > 0 {
+		bucket.DemandEndpointID = bucket.LegacyCampaignID
+	}
+	if bucket.SourceIDRevenue <= 0 && bucket.LegacyChannelRevenue > 0 {
+		bucket.SourceIDRevenue = bucket.LegacyChannelRevenue
+	}
+	if bucket.SourceIDRevenue <= 0 && bucket.LegacySourceMarginRevenue > 0 {
+		bucket.SourceIDRevenue = metricsSupplyRevenue(bucket.TotalRevenue, bucket.LegacySourceMarginRevenue)
+	}
+	if bucket.SourceIDRevenue > 0 && bucket.TotalRevenue > 0 && metricsRevenuesEqual(bucket.SourceIDRevenue, bucket.TotalRevenue) {
+		if margin := s.metricsDemandEndpointMarginLocked(bucket.DemandEndpointID); margin > 0 {
+			bucket.SourceIDRevenue = bucket.TotalRevenue * (1 - margin)
+		}
+	}
+	bucket.LegacyCampaignID = 0
+	bucket.LegacySourceMarginRevenue = 0
+	bucket.LegacyChannelRevenue = 0
+	bucket.CountryCode = normalizeMetricsCountryCode(bucket.CountryCode)
+	bucket.BundleID = normalizeMetricsBundleID(bucket.BundleID)
+	return bucket
+}
+
+func (s *store) metricsDemandEndpointMarginLocked(demandEndpointID int) float64 {
+	if s == nil || demandEndpointID <= 0 {
+		return 0
+	}
+	endpoint := s.demandEndpoints[demandEndpointID]
+	if endpoint == nil {
+		return 0
+	}
+	return normalizeMetricsMargin(endpoint.Margin)
 }
 
 func (s *store) addMetricsExportBucketLocked(bucket metricsExportBucket) {
@@ -791,12 +820,33 @@ func analyticsCPM(revenue float64, filledOpportunities int64) float64 {
 	return (revenue / float64(filledOpportunities)) * 1000
 }
 
+func normalizeMetricsMargin(margin float64) float64 {
+	if margin <= 0 {
+		return 0
+	}
+	if margin > 1 {
+		margin = margin / 100.0
+	}
+	if margin >= 1 {
+		return 0
+	}
+	return margin
+}
+
 func metricsSupplyRevenue(grossRevenue, marginRevenue float64) float64 {
 	supplyRevenue := grossRevenue - marginRevenue
 	if supplyRevenue <= 0 {
 		return 0
 	}
 	return supplyRevenue
+}
+
+func metricsRevenuesEqual(left, right float64) bool {
+	const epsilon = 1e-9
+	if left > right {
+		return left-right <= epsilon
+	}
+	return right-left <= epsilon
 }
 
 func decisionNetRevenue(decision AdDecision) float64 {
