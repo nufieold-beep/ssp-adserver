@@ -125,6 +125,7 @@ type metricsExportBucket struct {
 	FilledOpportunities int64     `json:"filled_opportunities"`
 	Impressions         int64     `json:"impressions"`
 	SourceIDRevenue     float64   `json:"source_id_revenue,omitempty"`
+	LegacySourceMarginRevenue float64 `json:"source_margin_revenue,omitempty"`
 	LegacyChannelRevenue float64  `json:"channel_revenue,omitempty"`
 	TotalRevenue        float64   `json:"total_revenue"`
 }
@@ -387,7 +388,11 @@ func (s *store) loadMetricsExportBucketsLocked(buckets []metricsExportBucket) {
 		if bucket.SourceIDRevenue <= 0 && bucket.LegacyChannelRevenue > 0 {
 			bucket.SourceIDRevenue = bucket.LegacyChannelRevenue
 		}
+		if bucket.SourceIDRevenue <= 0 && bucket.LegacySourceMarginRevenue > 0 {
+			bucket.SourceIDRevenue = metricsSupplyRevenue(bucket.TotalRevenue, bucket.LegacySourceMarginRevenue)
+		}
 		bucket.LegacyCampaignID = 0
+		bucket.LegacySourceMarginRevenue = 0
 		bucket.LegacyChannelRevenue = 0
 		bucket.CountryCode = normalizeMetricsCountryCode(bucket.CountryCode)
 		bucket.BundleID = normalizeMetricsBundleID(bucket.BundleID)
@@ -784,6 +789,14 @@ func analyticsCPM(revenue float64, filledOpportunities int64) float64 {
 		return 0
 	}
 	return (revenue / float64(filledOpportunities)) * 1000
+}
+
+func metricsSupplyRevenue(grossRevenue, marginRevenue float64) float64 {
+	supplyRevenue := grossRevenue - marginRevenue
+	if supplyRevenue <= 0 {
+		return 0
+	}
+	return supplyRevenue
 }
 
 func decisionNetRevenue(decision AdDecision) float64 {

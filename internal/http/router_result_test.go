@@ -212,6 +212,7 @@ func TestServedExportRowUsesDemandORTBEndpointID(t *testing.T) {
 			CrID:      "creative-1",
 			Seat:      "seat-1",
 			Price:     4.0,
+			Margin:    0.25,
 			ADomain:   []string{"ads.example"},
 			DemandSrc: "demand-ep-9",
 		},
@@ -240,7 +241,7 @@ func TestServedExportRowUsesDemandORTBEndpointID(t *testing.T) {
 		t.Fatalf("expected demand ORTB endpoint id 9, got %d", got)
 	}
 	if got := buckets[0].SourceIDRevenue; got != 0.003 {
-		t.Fatalf("expected source id revenue 0.003, got %.6f", got)
+		t.Fatalf("expected source supply revenue 0.003, got %.6f", got)
 	}
 	if got := buckets[0].TotalRevenue; got != 0.004 {
 		t.Fatalf("expected total revenue 0.004, got %.6f", got)

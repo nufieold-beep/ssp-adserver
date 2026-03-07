@@ -425,3 +425,30 @@ func TestMetricsExportRouteReturnsCSV(t *testing.T) {
 		t.Fatalf("expected csv row for exported hour, got %q", text)
 	}
 }
+
+func TestMetricsExportLoadMigratesLegacyMarginRevenueToSupplyRevenue(t *testing.T) {
+	s := newStore()
+	s.mu.Lock()
+	s.loadMetricsExportBucketsLocked([]metricsExportBucket{{
+		Hour:                time.Date(2026, time.March, 7, 9, 0, 0, 0, time.UTC),
+		SourceID:            11,
+		DemandEndpointID:    7,
+		CountryCode:         "USA",
+		BundleID:            "com.example.app",
+		AdRequests:          1,
+		AdOpportunities:     1,
+		FilledOpportunities: 1,
+		Impressions:         1,
+		LegacySourceMarginRevenue: 0.001,
+		TotalRevenue:        0.004,
+	}})
+	s.mu.Unlock()
+
+	buckets := s.snapshotMetricsExportBuckets()
+	if len(buckets) != 1 {
+		t.Fatalf("expected 1 migrated export bucket, got %d", len(buckets))
+	}
+	if !almostEqualFloat(buckets[0].SourceIDRevenue, 0.003) {
+		t.Fatalf("expected migrated supply revenue 0.003, got %.6f", buckets[0].SourceIDRevenue)
+	}
+}

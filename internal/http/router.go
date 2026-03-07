@@ -2914,14 +2914,16 @@ func handlePipelineServeResult(c *fiber.Ctx, p *pipeline.Pipeline, metrics *moni
 	metrics.RecordWin(result.WinPrice)
 	metrics.RecordSpend(result.Winner.ReportingPrice(result.WinPrice))
 	metrics.RecordGrossSpend(result.WinPrice)
+	sourceNetRevenue := result.Winner.ReportingPrice(result.WinPrice) / 1000.0
+	totalRevenue := result.WinPrice / 1000.0
 	s.recordMetricsExportRequestOutcome(
 		req,
 		auditSupplyID,
 		demandEndpointID,
 		auditBundle,
 		1,
-		result.Winner.ReportingPrice(result.WinPrice)/1000.0,
-		result.WinPrice/1000.0,
+		sourceNetRevenue,
+		totalRevenue,
 	)
 
 	s.recordAdDecision(req, result.Winner, result.WinPrice, auditSupplyID, auditSource, auditBundle, result.AdapterID, campaignID, campaignName, deliveryStatus)
