@@ -28,8 +28,8 @@ var requestDefaults = RequestDefaults{
 // Pre-allocated shared slices for BuildFromHTTP — avoids heap allocation per request.
 var (
 	defaultCur       = []string{"USD"}
-	defaultMimes     = []string{"video/mp4", "video/webm", "video/ogg", "application/x-mpegURL"}
-	defaultProtocols = []adcom1.MediaCreativeSubtype{2, 3, 5, 6, 7, 8, 11, 12} // VAST 2-4 inline+wrapper
+	defaultMimes     = []string{"video/mp4"}
+	defaultProtocols = []adcom1.MediaCreativeSubtype{2, 3, 5, 6, 7, 8}
 )
 
 var alpha2To3Country = map[string]string{

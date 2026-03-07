@@ -33,7 +33,7 @@ func Request(req *openrtb.BidRequest) error {
 		}
 		hasVideoImp = true
 		if len(req.Imp[i].Video.MIMEs) == 0 {
-			req.Imp[i].Video.MIMEs = []string{"video/mp4", "video/webm", "application/x-mpegURL"}
+			req.Imp[i].Video.MIMEs = []string{"video/mp4"}
 		}
 	}
 	if !hasVideoImp {
