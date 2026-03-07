@@ -65,10 +65,11 @@ func DetectAdmType(adm string) AdmType {
 	if trimmed == "" {
 		return AdmInline
 	}
-	if strings.HasPrefix(trimmed, "<?xml") || strings.HasPrefix(trimmed, "<VAST") {
+	lower := strings.ToLower(trimmed)
+	if strings.HasPrefix(lower, "<?xml") || strings.HasPrefix(lower, "<vast") || strings.HasPrefix(lower, "<vmap") {
 		return AdmPassthrough
 	}
-	if strings.HasPrefix(trimmed, "http://") || strings.HasPrefix(trimmed, "https://") {
+	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") || strings.HasPrefix(trimmed, "//") {
 		if isMediaExt(trimmed) {
 			return AdmInline
 		}
@@ -245,7 +246,7 @@ func supplyRef(evtBase string) string {
 
 // resolveAdm returns the Adm URL with macros substituted.
 func resolveAdm(bid *openrtb.Bid) string {
-	return bid.SubstituteMacros(strings.TrimSpace(bid.Adm))
+	return bid.SubstituteMacrosRaw(strings.TrimSpace(bid.Adm))
 }
 
 // bidDimensions returns the bid's width and height with sensible defaults.
@@ -351,7 +352,7 @@ func buildWrapper(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) str
 // injects SSP impression pixels only. The DSP's own TrackingEvents and
 // creative structure are preserved untouched.
 func buildPassthrough(bid *openrtb.Bid, req *openrtb.BidRequest, baseURL string) string {
-	xml := bid.SubstituteMacros(strings.TrimSpace(bid.Adm))
+	xml := bid.SubstituteMacrosRaw(strings.TrimSpace(bid.Adm))
 
 	evtBase := baseURL + "/api/v1/event"
 	impressions := impressionBlock(evtBase, bid, req)

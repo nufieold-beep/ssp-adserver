@@ -66,12 +66,25 @@ func bidFromPrebid(in openrtb2.Bid, seat string) Bid {
 // Handles plain ${MACRO}, fully-encoded %24%7BMACRO%7D, and
 // partially-encoded %24{MACRO} variants.
 func (b *Bid) SubstituteMacros(rawURL string) string {
-	if rawURL == "" {
-		return rawURL
+	return b.substituteMacros(rawURL, true)
+}
+
+// SubstituteMacrosRaw replaces OpenRTB macros without forcing URL normalization.
+// Use this for non-URL payloads like VAST XML in bid.Adm.
+func (b *Bid) SubstituteMacrosRaw(raw string) string {
+	return b.substituteMacros(raw, false)
+}
+
+func (b *Bid) substituteMacros(raw string, enforceScheme bool) string {
+	if raw == "" {
+		return raw
 	}
 	// Fast path: no macros present
-	if !strings.Contains(rawURL, "${") && !strings.Contains(rawURL, "%24") {
-		return ensureScheme(rawURL)
+	if !strings.Contains(raw, "${") && !strings.Contains(raw, "%24") {
+		if enforceScheme {
+			return ensureScheme(raw)
+		}
+		return raw
 	}
 
 	clearPrice := b.WinPrice
@@ -82,7 +95,7 @@ func (b *Bid) SubstituteMacros(rawURL string) string {
 	priceStr := formatPrice(clearPrice)
 
 	// Direct string replacements — faster than building a Replacer for 6 macros × 3 encodings.
-	r := rawURL
+	r := raw
 	r = replaceMacro(r, "AUCTION_PRICE", priceStr)
 	r = replaceMacro(r, "AUCTION_ID", b.ID)
 	r = replaceMacro(r, "AUCTION_BID_ID", b.ID)
@@ -90,7 +103,10 @@ func (b *Bid) SubstituteMacros(rawURL string) string {
 	r = replaceMacro(r, "AUCTION_SEAT_ID", b.Seat)
 	r = replaceMacro(r, "AUCTION_CURRENCY", "USD")
 
-	return ensureScheme(r)
+	if enforceScheme {
+		return ensureScheme(r)
+	}
+	return r
 }
 
 // ReportingPrice returns margin-adjusted price for internal billing/reporting.
@@ -105,19 +121,13 @@ func (b *Bid) ReportingPrice(grossPrice float64) float64 {
 // replaceMacro replaces all three encoding forms of a single macro in s.
 func replaceMacro(s, macro, val string) string {
 	// Plain: ${MACRO}
-	if i := strings.Index(s, "${"+macro+"}"); i >= 0 {
-		s = s[:i] + val + s[i+len(macro)+3:]
-	}
+	s = strings.ReplaceAll(s, "${"+macro+"}", val)
 	// Fully encoded: %24%7BMACRO%7D
 	enc := "%24%7B" + macro + "%7D"
-	if i := strings.Index(s, enc); i >= 0 {
-		s = s[:i] + val + s[i+len(enc):]
-	}
+	s = strings.ReplaceAll(s, enc, val)
 	// Partially encoded: %24{MACRO}
 	partial := "%24{" + macro + "}"
-	if i := strings.Index(s, partial); i >= 0 {
-		s = s[:i] + val + s[i+len(partial):]
-	}
+	s = strings.ReplaceAll(s, partial, val)
 	return s
 }
 
