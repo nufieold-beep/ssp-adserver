@@ -66,12 +66,13 @@ func normalizeMargin(margin float64) float64 {
 
 // BidResult contains bids from a single adapter plus metadata.
 type BidResult struct {
-	AdapterID string
-	Bids      []openrtb.Bid
-	Latency   time.Duration
-	NoBid     bool
-	TimedOut  bool
-	Error     error
+	AdapterID   string
+	Bids        []openrtb.Bid
+	Latency     time.Duration
+	NoBid       bool
+	NoBidReason string
+	TimedOut    bool
+	Error       error
 }
 
 // AdapterConfig holds adapter-specific settings loaded from config.

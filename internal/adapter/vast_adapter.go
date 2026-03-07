@@ -60,7 +60,7 @@ func (a *VASTAdapter) RequestBids(ctx context.Context, req *openrtb.BidRequest) 
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNoContent {
-		return &BidResult{AdapterID: a.id, NoBid: true}, nil
+		return &BidResult{AdapterID: a.id, NoBid: true, NoBidReason: "http_204_no_content"}, nil
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := httputil.ReadResponseBody(resp)
@@ -81,7 +81,7 @@ func (a *VASTAdapter) RequestBids(ctx context.Context, req *openrtb.BidRequest) 
 
 	adm := strings.TrimSpace(string(body))
 	if adm == "" {
-		return &BidResult{AdapterID: a.id, NoBid: true}, nil
+		return &BidResult{AdapterID: a.id, NoBid: true, NoBidReason: "empty_vast_response"}, nil
 	}
 
 	lowAdm := strings.ToLower(adm)

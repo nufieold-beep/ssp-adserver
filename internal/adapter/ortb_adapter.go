@@ -94,7 +94,7 @@ func (a *ORTBAdapter) RequestBids(ctx context.Context, req *openrtb.BidRequest) 
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNoContent {
-		return &BidResult{AdapterID: a.id, NoBid: true}, nil
+		return &BidResult{AdapterID: a.id, NoBid: true, NoBidReason: "http_204_no_content"}, nil
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := httputil.ReadResponseBody(resp)
@@ -121,7 +121,7 @@ func (a *ORTBAdapter) RequestBids(ctx context.Context, req *openrtb.BidRequest) 
 
 	validatedBids := openrtb.ValidateBidResponse(&prebidResp, outReq)
 	if len(validatedBids) == 0 {
-		return &BidResult{AdapterID: a.id, NoBid: true}, nil
+		return &BidResult{AdapterID: a.id, NoBid: true, NoBidReason: "no_valid_bids_after_validation"}, nil
 	}
 
 	// Margin is metadata for internal billing/reporting only.

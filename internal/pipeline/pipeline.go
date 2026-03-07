@@ -126,11 +126,21 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 	adapterErrorCount := 0
 	adapterTimeoutCount := 0
 	adapterNoBidCount := 0
+	attemptedAdapterIDs := make([]string, 0, len(bidResults))
+	errorAdapterIDs := make([]string, 0, len(bidResults))
+	timeoutAdapterIDs := make([]string, 0, len(bidResults))
+	noBidAdapterIDs := make([]string, 0, len(bidResults))
+	noBidAdapterReasons := make([]string, 0, len(bidResults))
 	for _, br := range bidResults {
+		if adapterID := strings.TrimSpace(br.AdapterID); adapterID != "" {
+			attemptedAdapterIDs = append(attemptedAdapterIDs, adapterID)
+		}
 		if br.Error != nil {
 			adapterErrorCount++
+			errorAdapterIDs = append(errorAdapterIDs, br.AdapterID)
 			if br.TimedOut {
 				adapterTimeoutCount++
+				timeoutAdapterIDs = append(timeoutAdapterIDs, br.AdapterID)
 			}
 			if p.Metrics != nil {
 				p.Metrics.RecordAdapterErrorReason(classifyAdapterErrorReason(br.AdapterID, br.Error, br.TimedOut))
@@ -152,6 +162,8 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 		}
 		if br.NoBid {
 			adapterNoBidCount++
+			noBidAdapterIDs = append(noBidAdapterIDs, br.AdapterID)
+			noBidAdapterReasons = append(noBidAdapterReasons, formatNoBidAdapterDetail(br.AdapterID, br.NoBidReason))
 			if hasNoBidSubscriber {
 				p.Bus.Publish(eventbus.Event{Type: eventbus.EvtNoBid, Data: map[string]interface{}{
 					"request_id": req.ID, "adapter": br.AdapterID,
@@ -174,7 +186,7 @@ func (p *Pipeline) Execute(ctx context.Context, req *openrtb.BidRequest, baseURL
 	}
 
 	if len(candidateBids) == 0 {
-		reasonDetails := buildNoBidReasonDetails(len(bidResults), adapterErrorCount, adapterTimeoutCount, adapterNoBidCount)
+		reasonDetails := buildNoBidReasonDetails(len(bidResults), adapterErrorCount, adapterTimeoutCount, adapterNoBidCount, attemptedAdapterIDs, errorAdapterIDs, timeoutAdapterIDs, noBidAdapterIDs, noBidAdapterReasons)
 		if p.Metrics != nil {
 			p.Metrics.RecordNoBidReason(buildNoBidReasonCode(len(bidResults), adapterErrorCount, adapterTimeoutCount, adapterNoBidCount))
 		}
@@ -319,12 +331,68 @@ func winnerIDOrEmpty(r *auction.AuctionResult) string {
 	return ""
 }
 
-func buildNoBidReasonDetails(totalAdapters, errorCount, timeoutCount, noBidCount int) string {
+func buildNoBidReasonDetails(totalAdapters, errorCount, timeoutCount, noBidCount int, attemptedAdapterIDs, errorAdapterIDs, timeoutAdapterIDs, noBidAdapterIDs, noBidAdapterReasons []string) string {
 	if totalAdapters == 0 {
 		return "no eligible demand adapters (check mapping/status/targeting/qps)"
 	}
-	return fmt.Sprintf("no winning bids: adapters=%d errors=%d timeouts=%d explicit_no_bids=%d",
-		totalAdapters, errorCount, timeoutCount, noBidCount)
+	parts := []string{fmt.Sprintf("no winning bids: adapters=%d errors=%d timeouts=%d explicit_no_bids=%d",
+		totalAdapters, errorCount, timeoutCount, noBidCount)}
+	if selected := summarizeAdapterIDs(attemptedAdapterIDs); selected != "" {
+		parts = append(parts, fmt.Sprintf("selected_adapters=%s", selected))
+	}
+	if noBidAdapters := summarizeAdapterIDs(noBidAdapterIDs); noBidAdapters != "" {
+		parts = append(parts, fmt.Sprintf("no_bid_adapters=%s", noBidAdapters))
+	}
+	if noBidReasons := summarizeAdapterIDs(noBidAdapterReasons); noBidReasons != "" {
+		parts = append(parts, fmt.Sprintf("no_bid_reasons=%s", noBidReasons))
+	}
+	if timeoutAdapters := summarizeAdapterIDs(timeoutAdapterIDs); timeoutAdapters != "" {
+		parts = append(parts, fmt.Sprintf("timeout_adapters=%s", timeoutAdapters))
+	}
+	if errorAdapters := summarizeAdapterIDs(errorAdapterIDs); errorAdapters != "" {
+		parts = append(parts, fmt.Sprintf("error_adapters=%s", errorAdapters))
+	}
+	return strings.Join(parts, " ")
+}
+
+func formatNoBidAdapterDetail(adapterID, reason string) string {
+	adapterID = strings.TrimSpace(adapterID)
+	reason = strings.TrimSpace(reason)
+	if adapterID == "" {
+		return reason
+	}
+	if reason == "" {
+		return adapterID
+	}
+	return fmt.Sprintf("%s(%s)", adapterID, reason)
+}
+
+func summarizeAdapterIDs(ids []string) string {
+	if len(ids) == 0 {
+		return ""
+	}
+
+	const maxList = 4
+	seen := make(map[string]struct{}, len(ids))
+	ordered := make([]string, 0, len(ids))
+	for _, raw := range ids {
+		id := strings.TrimSpace(raw)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ordered = append(ordered, id)
+	}
+	if len(ordered) == 0 {
+		return ""
+	}
+	if len(ordered) <= maxList {
+		return strings.Join(ordered, ",")
+	}
+	return strings.Join(ordered[:maxList], ",") + fmt.Sprintf(",+%d_more", len(ordered)-maxList)
 }
 
 func buildNoBidReasonCode(totalAdapters, errorCount, timeoutCount, noBidCount int) string {

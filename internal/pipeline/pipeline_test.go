@@ -28,6 +28,10 @@ type errorAdapter struct {
 	err error
 }
 
+type noBidAdapter struct {
+	id string
+}
+
 func (f *fakeAdapter) ID() string {
 	return f.id
 }
@@ -79,6 +83,31 @@ func (e *errorAdapter) RequestBids(ctx context.Context, _ *openrtb.BidRequest) (
 	default:
 	}
 	return nil, e.err
+}
+
+func (n *noBidAdapter) ID() string {
+	return n.id
+}
+
+func (n *noBidAdapter) Name() string {
+	return "no-bid"
+}
+
+func (n *noBidAdapter) Type() adapter.AdapterType {
+	return adapter.TypeORTB
+}
+
+func (n *noBidAdapter) Supports(_ *openrtb.BidRequest) bool {
+	return true
+}
+
+func (n *noBidAdapter) RequestBids(ctx context.Context, _ *openrtb.BidRequest) (*adapter.BidResult, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+	return &adapter.BidResult{AdapterID: n.id, NoBid: true, NoBidReason: "http_204_no_content"}, nil
 }
 
 func TestExecuteDefersNotificationsUntilFinalizeDelivery(t *testing.T) {
@@ -227,6 +256,52 @@ func TestExecuteTracksAdapterErrorsSeparatelyFromInternalErrors(t *testing.T) {
 	noBidReasons := metrics.NoBidReasonCounts(10)
 	if len(noBidReasons) == 0 || noBidReasons[0].Reason != "all_adapters_timed_out" {
 		t.Fatalf("expected all_adapters_timed_out no-bid reason, got %#v", noBidReasons)
+	}
+}
+
+func TestExecuteIncludesNoBidAdapterDetails(t *testing.T) {
+	reg := adapter.NewRegistry()
+	reg.Register(&noBidAdapter{id: "no-bid-adapter"}, &adapter.AdapterConfig{ID: "no-bid-adapter", Name: "No Bid Adapter", Type: adapter.TypeORTB, Endpoint: "http://unused", Status: 1})
+
+	metrics := monitor.New()
+	p := &pipeline.Pipeline{
+		Registry:    reg,
+		FloorEngine: floor.NewEngine(),
+		AQScanner:   adquality.NewScanner(),
+		Metrics:     metrics,
+		AuctionType: "first_price",
+		DefaultTMax: 100,
+	}
+
+	req := &openrtb.BidRequest{
+		ID:  "req-no-bid",
+		Imp: []openrtb.Imp{{ID: "imp-1", BidFloor: 0.5, TagID: "tag-1"}},
+		App: &openrtb.App{Bundle: "bundle-1"},
+	}
+
+	result := p.Execute(context.Background(), req, "https://ads.example.com")
+	if !result.NoBid {
+		t.Fatal("expected no bid result when the only adapter explicitly no-bids")
+	}
+
+	noBidEvents := metrics.GetTrafficEvents("no_bid")
+	if len(noBidEvents) == 0 {
+		t.Fatal("expected no_bid traffic event to be recorded")
+	}
+	details := noBidEvents[len(noBidEvents)-1].Details
+	if !strings.Contains(details, "selected_adapters=no-bid-adapter") {
+		t.Fatalf("expected no_bid details to include selected adapter, got %q", details)
+	}
+	if !strings.Contains(details, "no_bid_adapters=no-bid-adapter") {
+		t.Fatalf("expected no_bid details to include explicit no-bid adapter, got %q", details)
+	}
+	if !strings.Contains(details, "no_bid_reasons=no-bid-adapter(http_204_no_content)") {
+		t.Fatalf("expected no_bid details to include explicit no-bid reason, got %q", details)
+	}
+
+	noBidReasons := metrics.NoBidReasonCounts(10)
+	if len(noBidReasons) == 0 || noBidReasons[0].Reason != "all_adapters_no_bid" {
+		t.Fatalf("expected all_adapters_no_bid reason, got %#v", noBidReasons)
 	}
 }
 
