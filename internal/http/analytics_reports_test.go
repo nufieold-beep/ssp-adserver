@@ -3,6 +3,7 @@ package http
 import (
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -14,6 +15,10 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 )
+
+func almostEqualFloat(got, want float64) bool {
+	return math.Abs(got-want) <= 1e-9
+}
 
 func TestAnalyticsOverviewUsesDerivedFillAndCPMFormulas(t *testing.T) {
 	app := fiber.New()
@@ -56,25 +61,25 @@ func TestAnalyticsOverviewUsesDerivedFillAndCPMFormulas(t *testing.T) {
 	if body.FilledOpportunities != 2 {
 		t.Fatalf("expected 2 filled opportunities, got %d", body.FilledOpportunities)
 	}
-	if body.AdRequestFillRate != 20 {
+	if !almostEqualFloat(body.AdRequestFillRate, 20) {
 		t.Fatalf("expected ad request fill rate 20, got %.2f", body.AdRequestFillRate)
 	}
-	if body.OpportunityFillRate != 37.5 {
+	if !almostEqualFloat(body.OpportunityFillRate, 37.5) {
 		t.Fatalf("expected opportunity fill rate 37.5, got %.2f", body.OpportunityFillRate)
 	}
-	if body.NoBidRate != 62.5 {
+	if !almostEqualFloat(body.NoBidRate, 62.5) {
 		t.Fatalf("expected no-bid rate 62.5, got %.2f", body.NoBidRate)
 	}
-	if body.ECPM != 4.5 {
+	if !almostEqualFloat(body.ECPM, 4.5) {
 		t.Fatalf("expected eCPM 4.5, got %.2f", body.ECPM)
 	}
-	if body.GrossCPM != 6.0 {
+	if !almostEqualFloat(body.GrossCPM, 6.0) {
 		t.Fatalf("expected gross CPM 6.0, got %.2f", body.GrossCPM)
 	}
-	if body.TotalRevenue != 0.009 {
+	if !almostEqualFloat(body.TotalRevenue, 0.009) {
 		t.Fatalf("expected net revenue 0.009, got %.6f", body.TotalRevenue)
 	}
-	if body.TotalGrossRevenue != 0.012 {
+	if !almostEqualFloat(body.TotalGrossRevenue, 0.012) {
 		t.Fatalf("expected gross revenue 0.012, got %.6f", body.TotalGrossRevenue)
 	}
 }
@@ -124,13 +129,13 @@ func TestDemandSupplyAndBundleReportsUseClearingPriceAndTotals(t *testing.T) {
 	if len(demandRows) != 2 {
 		t.Fatalf("expected 2 demand rows, got %d", len(demandRows))
 	}
-	if demandRows[0].DemandRevenueTotal != 0.009 {
+	if !almostEqualFloat(demandRows[0].DemandRevenueTotal, 0.009) {
 		t.Fatalf("expected demand revenue total 0.009, got %.6f", demandRows[0].DemandRevenueTotal)
 	}
-	if demandRows[0].DemandGrossRevenueTotal != 0.012 {
+	if !almostEqualFloat(demandRows[0].DemandGrossRevenueTotal, 0.012) {
 		t.Fatalf("expected demand gross revenue total 0.012, got %.6f", demandRows[0].DemandGrossRevenueTotal)
 	}
-	if demandRows[0].GrossCPM != 8.0 {
+	if !almostEqualFloat(demandRows[0].GrossCPM, 8.0) {
 		t.Fatalf("expected first row gross CPM to use clearing price 8.0, got %.2f", demandRows[0].GrossCPM)
 	}
 	if demandRows[0].DemandName != "DSP Alpha" {
@@ -150,10 +155,10 @@ func TestDemandSupplyAndBundleReportsUseClearingPriceAndTotals(t *testing.T) {
 	if len(supplyRows) != 1 {
 		t.Fatalf("expected 1 supply row, got %d", len(supplyRows))
 	}
-	if supplyRows[0].Revenue != 0.009 {
+	if !almostEqualFloat(supplyRows[0].Revenue, 0.009) {
 		t.Fatalf("expected supply revenue 0.009, got %.6f", supplyRows[0].Revenue)
 	}
-	if supplyRows[0].GrossRevenue != 0.012 {
+	if !almostEqualFloat(supplyRows[0].GrossRevenue, 0.012) {
 		t.Fatalf("expected supply gross revenue 0.012, got %.6f", supplyRows[0].GrossRevenue)
 	}
 	if supplyRows[0].SupplyName != "CTV App" {
@@ -176,7 +181,7 @@ func TestDemandSupplyAndBundleReportsUseClearingPriceAndTotals(t *testing.T) {
 	if bundleRows[0].AppBundle != "com.example.app" {
 		t.Fatalf("expected canonical bundle com.example.app, got %q", bundleRows[0].AppBundle)
 	}
-	if bundleRows[0].GrossCPM != 6.0 {
+	if !almostEqualFloat(bundleRows[0].GrossCPM, 6.0) {
 		t.Fatalf("expected bundle gross CPM 6.0, got %.2f", bundleRows[0].GrossCPM)
 	}
 }
@@ -210,6 +215,19 @@ func TestPersistedAnalyticsTotalsSurviveRuntimeStateReload(t *testing.T) {
 
 	s.mu.Lock()
 	s.recordPersistedAnalyticsLocked(decision)
+	s.loadMetricsExportBucketsLocked([]metricsExportBucket{{
+		Hour:                time.Date(2026, time.March, 7, 9, 0, 0, 0, time.UTC),
+		SourceID:            11,
+		CampaignID:          7,
+		CountryCode:         "USA",
+		BundleID:            "com.example.app",
+		AdRequests:          1,
+		AdOpportunities:     1,
+		FilledOpportunities: 1,
+		Impressions:         1,
+		ChannelRevenue:      0.003,
+		TotalRevenue:        0.004,
+	}})
 	write := s.prepareSupplyDemandStateWriteLocked()
 	s.mu.Unlock()
 	if err := write.Persist(); err != nil {
@@ -225,10 +243,10 @@ func TestPersistedAnalyticsTotalsSurviveRuntimeStateReload(t *testing.T) {
 	reloaded.demandEndpoints[7] = &DemandEndpoint{ID: 7, Name: "DSP Alpha"}
 
 	state := reloaded.snapshotAnalyticsState()
-	if got := state.supplyTotals[11].Revenue; got != 0.003 {
+	if got := state.supplyTotals[11].Revenue; !almostEqualFloat(got, 0.003) {
 		t.Fatalf("expected persisted supply revenue 0.003, got %.6f", got)
 	}
-	if got := state.demandTotals["demand-ep-7"].GrossRevenue; got != 0.004 {
+	if got := state.demandTotals["demand-ep-7"].GrossRevenue; !almostEqualFloat(got, 0.004) {
 		t.Fatalf("expected persisted demand gross revenue 0.004, got %.6f", got)
 	}
 	if got := state.bundleTotals["com.example.app"].FilledOpportunities; got != 1 {
@@ -238,8 +256,15 @@ func TestPersistedAnalyticsTotalsSurviveRuntimeStateReload(t *testing.T) {
 	if len(hourly) != 1 {
 		t.Fatalf("expected 1 persisted hourly metrics bucket, got %d", len(hourly))
 	}
-	if got := hourly[0].Revenue; got != 0.003 {
+	if got := hourly[0].Revenue; !almostEqualFloat(got, 0.003) {
 		t.Fatalf("expected persisted hourly revenue 0.003, got %.6f", got)
+	}
+	exportBuckets := reloaded.snapshotMetricsExportBuckets()
+	if len(exportBuckets) != 1 {
+		t.Fatalf("expected 1 persisted export metrics bucket, got %d", len(exportBuckets))
+	}
+	if got := exportBuckets[0].SourceID; got != 11 {
+		t.Fatalf("expected persisted export source id 11, got %d", got)
 	}
 
 	app := fiber.New()
@@ -260,45 +285,51 @@ func TestPersistedAnalyticsTotalsSurviveRuntimeStateReload(t *testing.T) {
 	if rows[0].DemandName != "DSP Alpha" {
 		t.Fatalf("expected reloaded demand name DSP Alpha, got %q", rows[0].DemandName)
 	}
-	if rows[0].Revenue != 0.003 {
+	if !almostEqualFloat(rows[0].Revenue, 0.003) {
 		t.Fatalf("expected persisted demand revenue 0.003, got %.6f", rows[0].Revenue)
 	}
 }
 
 func TestBuildMetricsExportRowsGroupsByDateAndHour(t *testing.T) {
-	hourly := []monitor.HourlyMetricBucket{
+	buckets := []metricsExportBucket{
 		{
 			Hour:                time.Date(2026, time.March, 6, 10, 0, 0, 0, time.UTC),
+			SourceID:            11,
+			CampaignID:          77,
+			CountryCode:         "USA",
+			BundleID:            "com.example.app",
 			AdRequests:          10,
 			AdOpportunities:     10,
 			FilledOpportunities: 4,
 			Impressions:         3,
-			Completions:         2,
-			NoBids:              6,
-			Revenue:             0.012,
-			GrossRevenue:        0.016,
+			ChannelRevenue:      0.012,
+			TotalRevenue:        0.016,
 		},
 		{
 			Hour:                time.Date(2026, time.March, 6, 11, 0, 0, 0, time.UTC),
+			SourceID:            11,
+			CampaignID:          77,
+			CountryCode:         "USA",
+			BundleID:            "com.example.app",
 			AdRequests:          5,
 			AdOpportunities:     5,
 			FilledOpportunities: 1,
 			Impressions:         1,
-			Completions:         1,
-			NoBids:              4,
-			Revenue:             0.003,
-			GrossRevenue:        0.004,
+			ChannelRevenue:      0.003,
+			TotalRevenue:        0.004,
 		},
 		{
 			Hour:                time.Date(2026, time.March, 7, 9, 0, 0, 0, time.UTC),
+			SourceID:            15,
+			CampaignID:          88,
+			CountryCode:         "CAN",
+			BundleID:            "com.example.other",
 			AdRequests:          20,
 			AdOpportunities:     20,
 			FilledOpportunities: 10,
 			Impressions:         8,
-			Completions:         5,
-			NoBids:              10,
-			Revenue:             0.030,
-			GrossRevenue:        0.040,
+			ChannelRevenue:      0.030,
+			TotalRevenue:        0.040,
 		},
 	}
 
@@ -306,27 +337,45 @@ func TestBuildMetricsExportRowsGroupsByDateAndHour(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected date export query error: %v", err)
 	}
-	dateRows := buildMetricsExportRows(hourly, dateQuery)
+	dateRows := buildMetricsExportRows(buckets, dateQuery)
 	if len(dateRows) != 2 {
 		t.Fatalf("expected 2 daily rows, got %d", len(dateRows))
 	}
-	if dateRows[0].Date != "2026-03-06" || dateRows[0].AdRequests != 15 || dateRows[0].FilledOpportunities != 5 {
+	if dateRows[0].Date != "2026-03-06" || dateRows[0].AdRequests != 15 || dateRows[0].Impressions != 4 {
 		t.Fatalf("unexpected first daily row: %+v", dateRows[0])
 	}
-	if dateRows[0].ECPM != 3.0 {
-		t.Fatalf("expected first daily row eCPM 3.0, got %.2f", dateRows[0].ECPM)
+	if dateRows[0].SourceID != 11 || dateRows[0].CampaignID != 77 || dateRows[0].CountryCode != "USA" || dateRows[0].BundleID != "com.example.app" {
+		t.Fatalf("expected daily row dimensions to be preserved, got %+v", dateRows[0])
+	}
+	if !almostEqualFloat(dateRows[0].ECPM, 4.0) {
+		t.Fatalf("expected first daily row total eCPM 4.0, got %.2f", dateRows[0].ECPM)
+	}
+	if !almostEqualFloat(dateRows[0].ChannelECPM, 3.0) {
+		t.Fatalf("expected first daily row channel eCPM 3.0, got %.2f", dateRows[0].ChannelECPM)
 	}
 
 	hourQuery, err := resolveMetricsExportQuery("custom", "hour", "2026-03-06", "2026-03-06", "10", "11", time.Date(2026, time.March, 7, 12, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatalf("unexpected hourly export query error: %v", err)
 	}
-	hourRows := buildMetricsExportRows(hourly, hourQuery)
+	hourRows := buildMetricsExportRows(buckets, hourQuery)
 	if len(hourRows) != 2 {
 		t.Fatalf("expected 2 hourly rows, got %d", len(hourRows))
 	}
 	if hourRows[0].Hour != "10:00" || hourRows[1].Hour != "11:00" {
 		t.Fatalf("expected hourly rows to preserve separate UTC hour values, got %+v", hourRows)
+	}
+
+	summaryQuery, err := resolveMetricsExportQuery("today", "summary", "", "", "", "", time.Date(2026, time.March, 7, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("unexpected summary export query error: %v", err)
+	}
+	summaryRows := buildMetricsExportRows(buckets, summaryQuery)
+	if len(summaryRows) != 1 {
+		t.Fatalf("expected 1 summary row for today, got %d", len(summaryRows))
+	}
+	if summaryRows[0].Date != "" || summaryRows[0].Hour != "" {
+		t.Fatalf("expected summary rows without date/hour columns, got %+v", summaryRows[0])
 	}
 }
 
@@ -334,16 +383,21 @@ func TestMetricsExportRouteReturnsCSV(t *testing.T) {
 	app := fiber.New()
 	s := newStore()
 	metrics := monitor.New()
-	metrics.LoadHourlyMetrics([]monitor.HourlyMetricBucket{{
+	s.mu.Lock()
+	s.loadMetricsExportBucketsLocked([]metricsExportBucket{{
 		Hour:                time.Date(2026, time.March, 6, 10, 0, 0, 0, time.UTC),
+		SourceID:            11,
+		CampaignID:          77,
+		CountryCode:         "USA",
+		BundleID:            "com.example.app",
 		AdRequests:          10,
 		AdOpportunities:     10,
 		FilledOpportunities: 4,
 		Impressions:         3,
-		NoBids:              6,
-		Revenue:             0.012,
-		GrossRevenue:        0.016,
+		ChannelRevenue:      0.012,
+		TotalRevenue:        0.016,
 	}})
+	s.mu.Unlock()
 
 	registerAnalyticsRoutes(app, s, metrics)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/analytics/reports/export-metrics?preset=custom&group_by=hour&start_date=2026-03-06&end_date=2026-03-06&start_hour=10&end_hour=10&format=csv", nil)
@@ -358,10 +412,10 @@ func TestMetricsExportRouteReturnsCSV(t *testing.T) {
 		t.Fatalf("failed to read csv export body: %v", err)
 	}
 	text := string(body)
-	if !strings.Contains(text, "Date,Hour UTC,Ad Requests") {
+	if !strings.Contains(text, "Date,Hour,Source ID,Campaign ID,Country Code,Country,Bundle ID,Ad Requests") {
 		t.Fatalf("expected csv header, got %q", text)
 	}
-	if !strings.Contains(text, "2026-03-06,10:00,10,10,4") {
+	if !strings.Contains(text, "2026-03-06,10:00,11,77,USA,United States,com.example.app,10,10,3") {
 		t.Fatalf("expected csv row for exported hour, got %q", text)
 	}
 }

@@ -390,7 +390,7 @@ textarea{resize:vertical;min-height:68px}
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;gap:16px;flex-wrap:wrap">
     <div>
       <h3 style="font-size:16px;margin:0">Metrics Export</h3>
-      <p style="font-size:13px;color:var(--fg3);margin:4px 0 0">Export request, fill, and revenue metrics grouped by date or hour in UTC.</p>
+      <p style="font-size:13px;color:var(--fg3);margin:4px 0 0">Export metrics by preset total, date, or hour with source, campaign, country, and bundle dimensions in UTC.</p>
     </div>
     <div style="display:flex;gap:8px">
       <button class="btn btn-secondary btn-sm" onclick="loadMetricsExport()">↻ Refresh</button>
@@ -411,8 +411,9 @@ textarea{resize:vertical;min-height:68px}
         </div>
         <div class="form-group"><label>Group By</label>
           <select id="mxGroupBy" onchange="loadMetricsExport()">
-            <option value="date">Date</option>
-            <option value="hour">Hour</option>
+            <option value="summary">Preset Total</option>
+            <option value="date">By Date</option>
+            <option value="hour">By Date + Hour</option>
           </select>
         </div>
         <div class="form-group"><label>Timezone</label><input value="UTC" disabled></div>
@@ -435,16 +436,18 @@ textarea{resize:vertical;min-height:68px}
   <div class="stats-grid">
     <div class="stat-card accent"><div class="label">Rows</div><div class="value" id="mxRows">–</div></div>
     <div class="stat-card blue"><div class="label">Ad Requests</div><div class="value" id="mxRequests">–</div></div>
-    <div class="stat-card green"><div class="label">Filled Opps</div><div class="value" id="mxFilled">–</div></div>
-    <div class="stat-card yellow"><div class="label">Revenue</div><div class="value" id="mxRevenue">–</div></div>
+    <div class="stat-card green"><div class="label">Impressions</div><div class="value" id="mxImpressions">–</div></div>
+    <div class="stat-card yellow"><div class="label">Total Revenue</div><div class="value" id="mxRevenue">–</div></div>
   </div>
   <div class="card">
     <div class="card-header"><h3>Preview</h3><span id="mxSummary" style="font-size:11px;color:var(--fg3)">No data loaded</span></div>
     <div class="card-body table-wrap">
-      <table><thead><tr>
-        <th>Date</th><th>Hour UTC</th><th>Reqs</th><th>Opps</th><th>Filled</th><th>Imps</th><th>No-Bids</th>
-        <th>Revenue</th><th>Gross Rev</th><th>Req Fill</th><th>Opp Fill</th><th>eCPM</th><th>Gross CPM</th><th>VTR</th>
-      </tr></thead>
+      <table>
+        <thead id="mxHead"><tr>
+          <th>Source ID</th><th>Campaign ID</th><th>Country Code</th><th>Country</th><th>Bundle ID</th>
+          <th>Ad Requests</th><th>Ad Opportunities</th><th>Impressions</th><th>Channel Revenue</th><th>Channel eCPM</th>
+          <th>Total Revenue</th><th>eCPM</th><th>Fill Rate (Ad Req)</th><th>Fill Rate (Ad Ops)</th>
+        </tr></thead>
         <tbody id="mxBody"><tr><td colspan="14" class="empty">No export data yet</td></tr></tbody>
       </table>
     </div>
@@ -1252,7 +1255,7 @@ function applyMetricsExportPreset(){
 }
 function buildMetricsExportParams(format='json'){
   const preset=$v('mxPreset')||'today';
-  const params=new URLSearchParams({preset,group_by:$v('mxGroupBy')||'date'});
+  const params=new URLSearchParams({preset,group_by:$v('mxGroupBy')||'summary'});
   if(format&&format!=='json') params.set('format',format);
   if(preset==='custom'){
     params.set('start_date',$v('mxStartDate'));
@@ -1262,28 +1265,55 @@ function buildMetricsExportParams(format='json'){
   }
   return params;
 }
+function metricsExportHeaders(groupBy){
+  const headers=[];
+  if(groupBy==='date'||groupBy==='hour') headers.push('Date');
+  if(groupBy==='hour') headers.push('Hour');
+  headers.push('Source ID','Campaign ID','Country Code','Country','Bundle ID','Ad Requests','Ad Opportunities','Impressions','Channel Revenue','Channel eCPM','Total Revenue','eCPM','Fill Rate (Ad Req)','Fill Rate (Ad Ops)');
+  return headers;
+}
+function metricsExportRowCells(row,groupBy){
+  const cells=[];
+  if(groupBy==='date'||groupBy==='hour') cells.push(esc(row.date||'—'));
+  if(groupBy==='hour') cells.push(esc(row.hour||'—'));
+  cells.push(
+    esc(row.source_id?String(row.source_id):'—'),
+    esc(row.campaign_id?String(row.campaign_id):'—'),
+    esc(row.country_code||'—'),
+    esc(row.country||'—'),
+    esc(row.bundle_id||'—'),
+    fmtNum(row.ad_requests||0),
+    fmtNum(row.ad_opportunities||0),
+    fmtNum(row.impressions||0),
+    fmtMoney(row.channel_revenue||0),
+    `$${Number(row.channel_ecpm||0).toFixed(2)}`,
+    fmtMoney(row.total_revenue||0),
+    `$${Number(row.ecpm||0).toFixed(2)}`,
+    fmtPctValue(row.ad_request_fill_rate||0),
+    fmtPctValue(row.opportunity_fill_rate||0)
+  );
+  return cells;
+}
 async function loadMetricsExport(){
   try{
     const data=await api(`/api/v1/analytics/reports/export-metrics?${buildMetricsExportParams().toString()}`);
     const rows=data.rows||[];
+    const groupBy=data.group_by||$v('mxGroupBy')||'summary';
     const totals=rows.reduce((acc,row)=>{
       acc.requests+=(row.ad_requests||0);
-      acc.filled+=(row.filled_opportunities||0);
-      acc.revenue+=(row.revenue||0);
+      acc.impressions+=(row.impressions||0);
+      acc.revenue+=(row.total_revenue||0);
       return acc;
-    },{requests:0,filled:0,revenue:0});
+    },{requests:0,impressions:0,revenue:0});
+    const headers=metricsExportHeaders(groupBy);
+    $('mxHead').innerHTML=`<tr>${headers.map(label=>`<th>${esc(label)}</th>`).join('')}</tr>`;
     $('mxRows').textContent=fmtNum(rows.length);
     $('mxRequests').textContent=fmtNum(totals.requests);
-    $('mxFilled').textContent=fmtNum(totals.filled);
+    $('mxImpressions').textContent=fmtNum(totals.impressions);
     $('mxRevenue').textContent=fmtMoney(totals.revenue);
     $('mxRangeLabel').textContent=`UTC range: ${data.start_date||'—'} ${String(data.start_hour??0).padStart(2,'0')}:00 → ${data.end_date||'—'} ${String(data.end_hour??23).padStart(2,'0')}:59`;
-    $('mxSummary').textContent=`${fmtNum(rows.length)} ${data.group_by==='hour'?'hourly':'daily'} rows`;
-    $('mxBody').innerHTML=rows.length?rows.map(row=>`<tr>
-      <td>${esc(row.date||'—')}</td><td>${esc(row.hour||'All day')}</td><td>${fmtNum(row.ad_requests||0)}</td><td>${fmtNum(row.ad_opportunities||0)}</td>
-      <td>${fmtNum(row.filled_opportunities||0)}</td><td>${fmtNum(row.impressions||0)}</td><td>${fmtNum(row.no_bids||0)}</td>
-      <td>${fmtMoney(row.revenue||0)}</td><td>${fmtMoney(row.gross_revenue||0)}</td><td>${fmtPctValue(row.ad_request_fill_rate||0)}</td>
-      <td>${fmtPctValue(row.opportunity_fill_rate||0)}</td><td>$${Number(row.ecpm||0).toFixed(2)}</td><td>$${Number(row.gross_cpm||0).toFixed(2)}</td><td>${fmtPctValue(row.vtr||0)}</td>
-    </tr>`).join(''):'<tr><td colspan="14" class="empty">No export data for this range</td></tr>';
+    $('mxSummary').textContent=`${fmtNum(rows.length)} ${groupBy==='hour'?'hourly':groupBy==='date'?'daily':'summary'} rows`;
+    $('mxBody').innerHTML=rows.length?rows.map(row=>`<tr>${metricsExportRowCells(row,groupBy).map(cell=>`<td>${cell}</td>`).join('')}</tr>`).join(''):`<tr><td colspan="${headers.length}" class="empty">No export data for this range</td></tr>`;
   }catch(e){}
 }
 async function exportMetricsCSV(){
@@ -1314,7 +1344,7 @@ async function exportMetricsCSV(){
 }
 function initMetricsExportControls(){
   $('mxPreset').value='today';
-  $('mxGroupBy').value='date';
+  $('mxGroupBy').value='summary';
   applyMetricsExportPreset();
 }
 

@@ -50,6 +50,7 @@ type persistedAnalyticsState struct {
 	Supply        []persistedSupplyAnalytics   `json:"supply"`
 	Bundles       []persistedBundleAnalytics   `json:"bundles"`
 	HourlyMetrics []monitor.HourlyMetricBucket `json:"hourly_metrics,omitempty"`
+	ExportMetrics []metricsExportBucket        `json:"export_metrics,omitempty"`
 }
 
 type analyticsOverviewResponse struct {
@@ -112,40 +113,54 @@ type metricsExportQuery struct {
 	EndTimeExclusive time.Time `json:"end_time_exclusive"`
 }
 
+type metricsExportBucket struct {
+	Hour                time.Time `json:"hour"`
+	SourceID            int       `json:"source_id,omitempty"`
+	CampaignID          int       `json:"campaign_id,omitempty"`
+	CountryCode         string    `json:"country_code,omitempty"`
+	BundleID            string    `json:"bundle_id,omitempty"`
+	AdRequests          int64     `json:"ad_requests"`
+	AdOpportunities     int64     `json:"ad_opportunities"`
+	FilledOpportunities int64     `json:"filled_opportunities"`
+	Impressions         int64     `json:"impressions"`
+	ChannelRevenue      float64   `json:"channel_revenue"`
+	TotalRevenue        float64   `json:"total_revenue"`
+}
+
+type metricsExportDeliveryContext struct {
+	RecordedAt  time.Time
+	SourceID    int
+	CampaignID  int
+	CountryCode string
+	BundleID    string
+}
+
 type metricsExportAccumulator struct {
 	AdRequests          int64
 	AdOpportunities     int64
 	FilledOpportunities int64
 	Impressions         int64
-	Completions         int64
-	Clicks              int64
-	NoBids              int64
-	Errors              int64
-	AdapterErrors       int64
-	Revenue             float64
-	GrossRevenue        float64
+	ChannelRevenue      float64
+	TotalRevenue        float64
 }
 
 type metricsExportRow struct {
-	Date                string  `json:"date"`
+	Date                string  `json:"date,omitempty"`
 	Hour                string  `json:"hour,omitempty"`
+	SourceID            int     `json:"source_id,omitempty"`
+	CampaignID          int     `json:"campaign_id,omitempty"`
+	CountryCode         string  `json:"country_code,omitempty"`
+	Country             string  `json:"country,omitempty"`
+	BundleID            string  `json:"bundle_id,omitempty"`
 	AdRequests          int64   `json:"ad_requests"`
 	AdOpportunities     int64   `json:"ad_opportunities"`
-	FilledOpportunities int64   `json:"filled_opportunities"`
 	Impressions         int64   `json:"impressions"`
-	Completions         int64   `json:"completions"`
-	Clicks              int64   `json:"clicks"`
-	NoBids              int64   `json:"no_bids"`
-	Errors              int64   `json:"errors"`
-	AdapterErrors       int64   `json:"adapter_errors"`
-	Revenue             float64 `json:"revenue"`
-	GrossRevenue        float64 `json:"gross_revenue"`
+	ChannelRevenue      float64 `json:"channel_revenue"`
+	ChannelECPM         float64 `json:"channel_ecpm"`
+	TotalRevenue        float64 `json:"total_revenue"`
+	ECPM                float64 `json:"ecpm"`
 	AdRequestFillRate   float64 `json:"ad_request_fill_rate"`
 	OpportunityFillRate float64 `json:"opportunity_fill_rate"`
-	NoBidRate           float64 `json:"no_bid_rate"`
-	VTR                 float64 `json:"vtr"`
-	ECPM                float64 `json:"ecpm"`
-	GrossCPM            float64 `json:"gross_cpm"`
 }
 
 type metricsExportResponse struct {
@@ -253,6 +268,7 @@ func (s *store) loadPersistedAnalyticsLocked(snapshot persistedAnalyticsState) {
 	if s.metrics != nil {
 		s.metrics.LoadHourlyMetrics(snapshot.HourlyMetrics)
 	}
+	s.loadMetricsExportBucketsLocked(snapshot.ExportMetrics)
 }
 
 func (s *store) snapshotPersistedAnalyticsLocked() persistedAnalyticsState {
@@ -288,6 +304,7 @@ func (s *store) snapshotPersistedAnalyticsLocked() persistedAnalyticsState {
 	if s.metrics != nil {
 		out.HourlyMetrics = s.metrics.SnapshotHourlyMetrics()
 	}
+	out.ExportMetrics = s.snapshotMetricsExportBucketsLocked()
 
 	return out
 }
@@ -341,6 +358,212 @@ func (s *store) snapshotAnalyticsState() analyticsState {
 	s.mu.RUnlock()
 
 	return state
+}
+
+func (s *store) ensureMetricsExportStateLocked() {
+	if s.metricsExportBuckets == nil {
+		s.metricsExportBuckets = make(map[string]metricsExportBucket)
+	}
+	if s.metricsExportDelivery == nil {
+		s.metricsExportDelivery = make(map[string]metricsExportDeliveryContext)
+	}
+}
+
+func (s *store) loadMetricsExportBucketsLocked(buckets []metricsExportBucket) {
+	s.ensureMetricsExportStateLocked()
+	s.metricsExportBuckets = make(map[string]metricsExportBucket, len(buckets))
+	s.metricsExportDelivery = make(map[string]metricsExportDeliveryContext)
+	for _, bucket := range buckets {
+		hour := bucket.Hour.UTC().Truncate(time.Hour)
+		if hour.IsZero() {
+			continue
+		}
+		bucket.Hour = hour
+		bucket.CountryCode = normalizeMetricsCountryCode(bucket.CountryCode)
+		bucket.BundleID = normalizeMetricsBundleID(bucket.BundleID)
+		s.metricsExportBuckets[metricsExportBucketKey(bucket)] = bucket
+	}
+}
+
+func (s *store) snapshotMetricsExportBucketsLocked() []metricsExportBucket {
+	if len(s.metricsExportBuckets) == 0 {
+		return nil
+	}
+	out := make([]metricsExportBucket, 0, len(s.metricsExportBuckets))
+	for _, bucket := range s.metricsExportBuckets {
+		out = append(out, bucket)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Hour.Equal(out[j].Hour) {
+			if out[i].SourceID == out[j].SourceID {
+				if out[i].CampaignID == out[j].CampaignID {
+					if out[i].CountryCode == out[j].CountryCode {
+						return out[i].BundleID < out[j].BundleID
+					}
+					return out[i].CountryCode < out[j].CountryCode
+				}
+				return out[i].CampaignID < out[j].CampaignID
+			}
+			return out[i].SourceID < out[j].SourceID
+		}
+		return out[i].Hour.Before(out[j].Hour)
+	})
+	return out
+}
+
+func (s *store) snapshotMetricsExportBuckets() []metricsExportBucket {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.snapshotMetricsExportBucketsLocked()
+}
+
+func (s *store) addMetricsExportBucketLocked(bucket metricsExportBucket) {
+	bucket.Hour = bucket.Hour.UTC().Truncate(time.Hour)
+	bucket.CountryCode = normalizeMetricsCountryCode(bucket.CountryCode)
+	bucket.BundleID = normalizeMetricsBundleID(bucket.BundleID)
+	key := metricsExportBucketKey(bucket)
+	existing := s.metricsExportBuckets[key]
+	if existing.Hour.IsZero() {
+		existing.Hour = bucket.Hour
+		existing.SourceID = bucket.SourceID
+		existing.CampaignID = bucket.CampaignID
+		existing.CountryCode = bucket.CountryCode
+		existing.BundleID = bucket.BundleID
+	}
+	existing.AdRequests += bucket.AdRequests
+	existing.AdOpportunities += bucket.AdOpportunities
+	existing.FilledOpportunities += bucket.FilledOpportunities
+	existing.Impressions += bucket.Impressions
+	existing.ChannelRevenue += bucket.ChannelRevenue
+	existing.TotalRevenue += bucket.TotalRevenue
+	s.metricsExportBuckets[key] = existing
+}
+
+func (s *store) recordMetricsExportRequestOutcome(req *openrtb.BidRequest, sourceID, campaignID int, bundleID string, filledOpportunities int64, channelRevenue, totalRevenue float64) {
+	if s == nil {
+		return
+	}
+
+	recordedAt := time.Now().UTC()
+	requestID := ""
+	countryCode := ""
+	if req != nil {
+		requestID = strings.TrimSpace(req.ID)
+		if req.Device != nil && req.Device.Geo != nil {
+			countryCode = req.Device.Geo.Country
+		}
+	}
+
+	bucket := metricsExportBucket{
+		Hour:                recordedAt.Truncate(time.Hour),
+		SourceID:            sourceID,
+		CampaignID:          campaignID,
+		CountryCode:         countryCode,
+		BundleID:            bundleID,
+		AdRequests:          1,
+		AdOpportunities:     1,
+		FilledOpportunities: filledOpportunities,
+		ChannelRevenue:      channelRevenue,
+		TotalRevenue:        totalRevenue,
+	}
+
+	s.mu.Lock()
+	s.ensureMetricsExportStateLocked()
+	s.addMetricsExportBucketLocked(bucket)
+	if requestID != "" && filledOpportunities > 0 {
+		s.metricsExportDelivery[requestID] = metricsExportDeliveryContext{
+			RecordedAt:  recordedAt,
+			SourceID:    bucket.SourceID,
+			CampaignID:  bucket.CampaignID,
+			CountryCode: normalizeMetricsCountryCode(bucket.CountryCode),
+			BundleID:    normalizeMetricsBundleID(bucket.BundleID),
+		}
+	}
+	s.pruneMetricsExportDeliveryLocked(recordedAt)
+	s.stateGeneration.Add(1)
+	s.mu.Unlock()
+	s.scheduleDeferredStatePersist()
+}
+
+func (s *store) recordMetricsExportImpression(requestID, countryCode, bundleID string) {
+	if s == nil {
+		return
+	}
+
+	recordedAt := time.Now().UTC()
+	requestID = strings.TrimSpace(requestID)
+	context := metricsExportDeliveryContext{
+		RecordedAt:  recordedAt,
+		CountryCode: normalizeMetricsCountryCode(countryCode),
+		BundleID:    normalizeMetricsBundleID(bundleID),
+	}
+
+	s.mu.Lock()
+	s.ensureMetricsExportStateLocked()
+	if requestID != "" {
+		if stored, ok := s.metricsExportDelivery[requestID]; ok {
+			context = stored
+			context.RecordedAt = recordedAt
+			s.metricsExportDelivery[requestID] = context
+		}
+	}
+	s.addMetricsExportBucketLocked(metricsExportBucket{
+		Hour:        recordedAt.Truncate(time.Hour),
+		SourceID:    context.SourceID,
+		CampaignID:  context.CampaignID,
+		CountryCode: context.CountryCode,
+		BundleID:    context.BundleID,
+		Impressions: 1,
+	})
+	s.pruneMetricsExportDeliveryLocked(recordedAt)
+	s.stateGeneration.Add(1)
+	s.mu.Unlock()
+	s.scheduleDeferredStatePersist()
+}
+
+func (s *store) pruneMetricsExportDeliveryLocked(now time.Time) {
+	if len(s.metricsExportDelivery) == 0 {
+		return
+	}
+	cutoff := now.Add(-48 * time.Hour)
+	for requestID, context := range s.metricsExportDelivery {
+		if context.RecordedAt.Before(cutoff) {
+			delete(s.metricsExportDelivery, requestID)
+		}
+	}
+	if len(s.metricsExportDelivery) <= 10000 {
+		return
+	}
+	toTrim := len(s.metricsExportDelivery) - 10000
+	for requestID, context := range s.metricsExportDelivery {
+		if context.RecordedAt.Before(now.Add(-6 * time.Hour)) {
+			delete(s.metricsExportDelivery, requestID)
+			toTrim--
+			if toTrim <= 0 {
+				return
+			}
+		}
+	}
+	for requestID := range s.metricsExportDelivery {
+		delete(s.metricsExportDelivery, requestID)
+		toTrim--
+		if toTrim <= 0 {
+			return
+		}
+	}
+}
+
+func metricsExportBucketKey(bucket metricsExportBucket) string {
+	return fmt.Sprintf("%s|%d|%d|%s|%s",
+		bucket.Hour.UTC().Truncate(time.Hour).Format(time.RFC3339),
+		bucket.SourceID,
+		bucket.CampaignID,
+		normalizeMetricsCountryCode(bucket.CountryCode),
+		normalizeMetricsBundleID(bucket.BundleID),
+	)
 }
 
 func buildAnalyticsOverview(base monitor.Overview) analyticsOverviewResponse {
@@ -689,9 +912,13 @@ func resolveMetricsExportQuery(preset, groupBy, startDate, endDate, startHourRaw
 
 	groupBy = strings.ToLower(strings.TrimSpace(groupBy))
 	if groupBy == "" {
-		groupBy = "date"
+		if preset == "custom" {
+			groupBy = "date"
+		} else {
+			groupBy = "summary"
+		}
 	}
-	if groupBy != "date" && groupBy != "hour" {
+	if groupBy != "summary" && groupBy != "date" && groupBy != "hour" {
 		return metricsExportQuery{}, fmt.Errorf("invalid group_by %q", groupBy)
 	}
 
@@ -748,7 +975,7 @@ func resolveMetricsExportQuery(preset, groupBy, startDate, endDate, startHourRaw
 	return query, nil
 }
 
-func buildMetricsExportResponse(hourly []monitor.HourlyMetricBucket, query metricsExportQuery) metricsExportResponse {
+func buildMetricsExportResponse(buckets []metricsExportBucket, query metricsExportQuery) metricsExportResponse {
 	return metricsExportResponse{
 		Preset:           query.Preset,
 		GroupBy:          query.GroupBy,
@@ -759,24 +986,28 @@ func buildMetricsExportResponse(hourly []monitor.HourlyMetricBucket, query metri
 		EndHour:          query.EndHour,
 		StartTime:        query.StartTime,
 		EndTimeExclusive: query.EndTimeExclusive,
-		Rows:             buildMetricsExportRows(hourly, query),
+		Rows:             buildMetricsExportRows(buckets, query),
 	}
 }
 
-func buildMetricsExportRows(hourly []monitor.HourlyMetricBucket, query metricsExportQuery) []metricsExportRow {
-	if len(hourly) == 0 {
+func buildMetricsExportRows(buckets []metricsExportBucket, query metricsExportQuery) []metricsExportRow {
+	if len(buckets) == 0 {
 		return make([]metricsExportRow, 0)
 	}
 
 	type groupedRow struct {
-		stamp time.Time
-		date  string
-		hour  string
-		acc   metricsExportAccumulator
+		stamp       time.Time
+		date        string
+		hour        string
+		sourceID    int
+		campaignID  int
+		countryCode string
+		bundleID    string
+		acc         metricsExportAccumulator
 	}
 
 	rowsByKey := make(map[string]*groupedRow)
-	for _, bucket := range hourly {
+	for _, bucket := range buckets {
 		hour := bucket.Hour.UTC().Truncate(time.Hour)
 		if hour.IsZero() {
 			continue
@@ -785,20 +1016,36 @@ func buildMetricsExportRows(hourly []monitor.HourlyMetricBucket, query metricsEx
 			continue
 		}
 
-		key := hour.Format("2006-01-02")
+		date := ""
 		rowHour := ""
-		stamp := hour
-		if query.GroupBy == "hour" {
-			key = hour.Format(time.RFC3339)
+		stamp := query.StartTime
+		timeKey := "summary"
+		switch query.GroupBy {
+		case "date":
+			date = hour.Format("2006-01-02")
+			timeKey = date
+			stamp = time.Date(hour.Year(), hour.Month(), hour.Day(), 0, 0, 0, 0, time.UTC)
+		case "hour":
+			date = hour.Format("2006-01-02")
 			rowHour = hour.Format("15:00")
+			timeKey = hour.Format(time.RFC3339)
+			stamp = hour
 		}
+
+		countryCode := normalizeMetricsCountryCode(bucket.CountryCode)
+		bundleID := normalizeMetricsBundleID(bucket.BundleID)
+		key := fmt.Sprintf("%s|%d|%d|%s|%s", timeKey, bucket.SourceID, bucket.CampaignID, countryCode, bundleID)
 
 		row := rowsByKey[key]
 		if row == nil {
 			row = &groupedRow{
-				stamp: stamp,
-				date:  hour.Format("2006-01-02"),
-				hour:  rowHour,
+				stamp:       stamp,
+				date:        date,
+				hour:        rowHour,
+				sourceID:    bucket.SourceID,
+				campaignID:  bucket.CampaignID,
+				countryCode: countryCode,
+				bundleID:    bundleID,
 			}
 			rowsByKey[key] = row
 		}
@@ -810,6 +1057,18 @@ func buildMetricsExportRows(hourly []monitor.HourlyMetricBucket, query metricsEx
 		ordered = append(ordered, *row)
 	}
 	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].stamp.Equal(ordered[j].stamp) {
+			if ordered[i].sourceID == ordered[j].sourceID {
+				if ordered[i].campaignID == ordered[j].campaignID {
+					if ordered[i].countryCode == ordered[j].countryCode {
+						return ordered[i].bundleID < ordered[j].bundleID
+					}
+					return ordered[i].countryCode < ordered[j].countryCode
+				}
+				return ordered[i].campaignID < ordered[j].campaignID
+			}
+			return ordered[i].sourceID < ordered[j].sourceID
+		}
 		return ordered[i].stamp.Before(ordered[j].stamp)
 	})
 
@@ -818,23 +1077,20 @@ func buildMetricsExportRows(hourly []monitor.HourlyMetricBucket, query metricsEx
 		rows = append(rows, metricsExportRow{
 			Date:                row.date,
 			Hour:                row.hour,
+			SourceID:            row.sourceID,
+			CampaignID:          row.campaignID,
+			CountryCode:         row.countryCode,
+			Country:             metricsCountryName(row.countryCode),
+			BundleID:            row.bundleID,
 			AdRequests:          row.acc.AdRequests,
 			AdOpportunities:     row.acc.AdOpportunities,
-			FilledOpportunities: row.acc.FilledOpportunities,
 			Impressions:         row.acc.Impressions,
-			Completions:         row.acc.Completions,
-			Clicks:              row.acc.Clicks,
-			NoBids:              row.acc.NoBids,
-			Errors:              row.acc.Errors,
-			AdapterErrors:       row.acc.AdapterErrors,
-			Revenue:             row.acc.Revenue,
-			GrossRevenue:        row.acc.GrossRevenue,
+			ChannelRevenue:      row.acc.ChannelRevenue,
+			ChannelECPM:         analyticsCPM(row.acc.ChannelRevenue, row.acc.FilledOpportunities),
+			TotalRevenue:        row.acc.TotalRevenue,
 			AdRequestFillRate:   analyticsPercent(row.acc.FilledOpportunities, row.acc.AdRequests),
 			OpportunityFillRate: analyticsPercent(row.acc.Impressions, row.acc.AdOpportunities),
-			NoBidRate:           analyticsPercent(row.acc.NoBids, row.acc.AdOpportunities),
-			VTR:                 analyticsPercent(row.acc.Completions, row.acc.Impressions),
-			ECPM:                analyticsCPM(row.acc.Revenue, row.acc.FilledOpportunities),
-			GrossCPM:            analyticsCPM(row.acc.GrossRevenue, row.acc.FilledOpportunities),
+			ECPM:                analyticsCPM(row.acc.TotalRevenue, row.acc.FilledOpportunities),
 		})
 	}
 
@@ -844,59 +1100,61 @@ func buildMetricsExportRows(hourly []monitor.HourlyMetricBucket, query metricsEx
 	return rows
 }
 
-func renderMetricsExportCSV(rows []metricsExportRow) (string, error) {
+func renderMetricsExportCSV(rows []metricsExportRow, groupBy string) (string, error) {
 	buf := &bytes.Buffer{}
 	writer := csv.NewWriter(buf)
-	if err := writer.Write([]string{
-		"Date",
-		"Hour UTC",
+	headers := make([]string, 0, 15)
+	if groupBy == "date" || groupBy == "hour" {
+		headers = append(headers, "Date")
+	}
+	if groupBy == "hour" {
+		headers = append(headers, "Hour")
+	}
+	headers = append(headers,
+		"Source ID",
+		"Campaign ID",
+		"Country Code",
+		"Country",
+		"Bundle ID",
 		"Ad Requests",
 		"Ad Opportunities",
-		"Filled Opportunities",
 		"Impressions",
-		"Completions",
-		"Clicks",
-		"No Bids",
-		"Errors",
-		"Adapter Errors",
-		"Revenue",
-		"Gross Revenue",
-		"Ad Request Fill Rate (%)",
-		"Opportunity Fill Rate (%)",
-		"No-Bid Rate (%)",
-		"VTR (%)",
+		"Channel Revenue",
+		"Channel eCPM",
+		"Total Revenue",
 		"eCPM",
-		"Gross CPM",
-	}); err != nil {
+		"Fill Rate (Ad Req)",
+		"Fill Rate (Ad Ops)",
+	)
+	if err := writer.Write(headers); err != nil {
 		return "", err
 	}
 
 	for _, row := range rows {
-		hour := row.Hour
-		if hour == "" {
-			hour = "All day"
+		record := make([]string, 0, len(headers))
+		if groupBy == "date" || groupBy == "hour" {
+			record = append(record, row.Date)
 		}
-		if err := writer.Write([]string{
-			row.Date,
-			hour,
+		if groupBy == "hour" {
+			record = append(record, row.Hour)
+		}
+		record = append(record,
+			metricsExportIntString(row.SourceID),
+			metricsExportIntString(row.CampaignID),
+			row.CountryCode,
+			row.Country,
+			row.BundleID,
 			strconv.FormatInt(row.AdRequests, 10),
 			strconv.FormatInt(row.AdOpportunities, 10),
-			strconv.FormatInt(row.FilledOpportunities, 10),
 			strconv.FormatInt(row.Impressions, 10),
-			strconv.FormatInt(row.Completions, 10),
-			strconv.FormatInt(row.Clicks, 10),
-			strconv.FormatInt(row.NoBids, 10),
-			strconv.FormatInt(row.Errors, 10),
-			strconv.FormatInt(row.AdapterErrors, 10),
-			fmt.Sprintf("%.6f", row.Revenue),
-			fmt.Sprintf("%.6f", row.GrossRevenue),
+			fmt.Sprintf("%.6f", row.ChannelRevenue),
+			fmt.Sprintf("%.2f", row.ChannelECPM),
+			fmt.Sprintf("%.6f", row.TotalRevenue),
+			fmt.Sprintf("%.2f", row.ECPM),
 			fmt.Sprintf("%.2f", row.AdRequestFillRate),
 			fmt.Sprintf("%.2f", row.OpportunityFillRate),
-			fmt.Sprintf("%.2f", row.NoBidRate),
-			fmt.Sprintf("%.2f", row.VTR),
-			fmt.Sprintf("%.2f", row.ECPM),
-			fmt.Sprintf("%.2f", row.GrossCPM),
-		}); err != nil {
+		)
+		if err := writer.Write(record); err != nil {
 			return "", err
 		}
 	}
@@ -934,16 +1192,120 @@ func parseMetricsExportHour(raw string, fallback int) (int, error) {
 	return hour, nil
 }
 
-func (a *metricsExportAccumulator) addBucket(bucket monitor.HourlyMetricBucket) {
+func normalizeMetricsCountryCode(raw string) string {
+	code := strings.ToUpper(strings.TrimSpace(raw))
+	if code == "" {
+		return "unknown"
+	}
+	if len(code) == 2 {
+		return openrtb.ToAlpha3(code)
+	}
+	return code
+}
+
+func normalizeMetricsBundleID(raw string) string {
+	bundleID := strings.TrimSpace(raw)
+	if bundleID == "" {
+		return "unknown"
+	}
+	return bundleID
+}
+
+func metricsExportIntString(value int) string {
+	if value <= 0 {
+		return ""
+	}
+	return strconv.Itoa(value)
+}
+
+func metricsCountryName(code string) string {
+	code = normalizeMetricsCountryCode(code)
+	if code == "unknown" {
+		return "Unknown"
+	}
+	if name := metricsCountryNames[code]; name != "" {
+		return name
+	}
+	return code
+}
+
+var metricsCountryNames = map[string]string{
+	"ARG": "Argentina",
+	"ARE": "United Arab Emirates",
+	"AUS": "Australia",
+	"AUT": "Austria",
+	"BEL": "Belgium",
+	"BGD": "Bangladesh",
+	"BGR": "Bulgaria",
+	"BRA": "Brazil",
+	"CAN": "Canada",
+	"CHE": "Switzerland",
+	"CHL": "Chile",
+	"CHN": "China",
+	"COL": "Colombia",
+	"CRI": "Costa Rica",
+	"CUB": "Cuba",
+	"CZE": "Czech Republic",
+	"DEU": "Germany",
+	"DNK": "Denmark",
+	"DOM": "Dominican Republic",
+	"ECU": "Ecuador",
+	"EGY": "Egypt",
+	"ESP": "Spain",
+	"EST": "Estonia",
+	"FIN": "Finland",
+	"FRA": "France",
+	"GBR": "United Kingdom",
+	"GRC": "Greece",
+	"GTM": "Guatemala",
+	"HKG": "Hong Kong",
+	"HRV": "Croatia",
+	"HUN": "Hungary",
+	"IDN": "Indonesia",
+	"IND": "India",
+	"IRL": "Ireland",
+	"ISR": "Israel",
+	"ITA": "Italy",
+	"JAM": "Jamaica",
+	"JPN": "Japan",
+	"KEN": "Kenya",
+	"KOR": "South Korea",
+	"LTU": "Lithuania",
+	"LVA": "Latvia",
+	"MEX": "Mexico",
+	"MYS": "Malaysia",
+	"NGA": "Nigeria",
+	"NLD": "Netherlands",
+	"NOR": "Norway",
+	"NZL": "New Zealand",
+	"PAK": "Pakistan",
+	"PAN": "Panama",
+	"PER": "Peru",
+	"PHL": "Philippines",
+	"POL": "Poland",
+	"PRI": "Puerto Rico",
+	"PRT": "Portugal",
+	"ROU": "Romania",
+	"SAU": "Saudi Arabia",
+	"SGP": "Singapore",
+	"SVK": "Slovakia",
+	"SVN": "Slovenia",
+	"SWE": "Sweden",
+	"THA": "Thailand",
+	"TUR": "Turkey",
+	"TWN": "Taiwan",
+	"UKR": "Ukraine",
+	"USA": "United States",
+	"VEN": "Venezuela",
+	"VNM": "Vietnam",
+	"ZAF": "South Africa",
+}
+
+func (a *metricsExportAccumulator) addBucket(bucket metricsExportBucket) {
 	a.AdRequests += bucket.AdRequests
 	a.AdOpportunities += bucket.AdOpportunities
 	a.FilledOpportunities += bucket.FilledOpportunities
 	a.Impressions += bucket.Impressions
-	a.Completions += bucket.Completions
-	a.Clicks += bucket.Clicks
-	a.NoBids += bucket.NoBids
-	a.Errors += bucket.Errors
-	a.AdapterErrors += bucket.AdapterErrors
-	a.Revenue += bucket.Revenue
-	a.GrossRevenue += bucket.GrossRevenue
+	a.ChannelRevenue += bucket.ChannelRevenue
+	a.TotalRevenue += bucket.TotalRevenue
 }

@@ -103,7 +103,7 @@ func TestDecisionAuditBundleSuppressesJunkWithoutFallback(t *testing.T) {
 func TestEventRoutesCleanBundleFromTrackingQuery(t *testing.T) {
 	app := fiber.New()
 	metrics := monitor.New()
-	registerEventRoutes(app, metrics)
+	registerEventRoutes(app, newStore(), metrics)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/event/impression?rid=req-1&bndl=1022720soccha", nil)
 	resp, err := app.Test(req)
@@ -120,5 +120,68 @@ func TestEventRoutesCleanBundleFromTrackingQuery(t *testing.T) {
 	}
 	if got := events[0].Bundle; got != "" {
 		t.Fatalf("expected junk callback bundle to be suppressed, got %q", got)
+	}
+}
+
+func TestDeliveryBlockedExportRowLeavesCampaignUnattributed(t *testing.T) {
+	app := fiber.New()
+	metrics := monitor.New()
+	s := newStore()
+	s.campaigns[7] = &Campaign{
+		ID:          7,
+		Name:        "Budget Blocked",
+		Status:      1,
+		ADomain:     "ads.example",
+		BudgetDaily: 0.001,
+		SpentToday:  0.001,
+	}
+	s.rebuildCampaignIndexLocked()
+
+	req := &openrtb.BidRequest{
+		ID:  "req-blocked-export",
+		App: &openrtb.App{Bundle: "com.example.app"},
+		Device: &openrtb.Device{
+			Geo: &openrtb.Geo{Country: "USA"},
+		},
+	}
+	result := &pipeline.Result{
+		Winner: &openrtb.Bid{
+			ID:      "bid-1",
+			CrID:    "creative-1",
+			Seat:    "seat-1",
+			Price:   4.0,
+			ADomain: []string{"ads.example"},
+		},
+		WinPrice: 4.0,
+		VAST:     "<VAST/>",
+	}
+
+	app.Get("/", func(c *fiber.Ctx) error {
+		return handlePipelineServeResult(c, &pipeline.Pipeline{}, metrics, s, req, result, &SupplyTag{ID: 42}, "supply_tag")
+	})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/", nil))
+	if err != nil {
+		t.Fatalf("unexpected fiber test error: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected no-ad XML status %d, got %d", http.StatusOK, resp.StatusCode)
+	}
+
+	buckets := s.snapshotMetricsExportBuckets()
+	if len(buckets) != 1 {
+		t.Fatalf("expected 1 export bucket, got %d", len(buckets))
+	}
+	if got := buckets[0].CampaignID; got != 0 {
+		t.Fatalf("expected delivery-blocked export row to leave campaign unattributed, got campaign id %d", got)
+	}
+	if got := buckets[0].SourceID; got != 42 {
+		t.Fatalf("expected source id 42 in export bucket, got %d", got)
+	}
+	if got := buckets[0].AdRequests; got != 1 {
+		t.Fatalf("expected one attributed ad request, got %d", got)
+	}
+	if got := buckets[0].Impressions; got != 0 {
+		t.Fatalf("expected no impressions for blocked delivery, got %d", got)
 	}
 }

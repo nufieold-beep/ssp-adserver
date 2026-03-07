@@ -207,6 +207,8 @@ type store struct {
 	analyticsDemandTotals map[string]analyticsAccumulator
 	analyticsSupplyTotals map[int]analyticsAccumulator
 	analyticsBundleTotals map[string]analyticsAccumulator
+	metricsExportBuckets  map[string]metricsExportBucket
+	metricsExportDelivery map[string]metricsExportDeliveryContext
 
 	budgetDayKey   string
 	frequencyByKey map[string]int
@@ -278,6 +280,8 @@ func newStore() *store {
 		analyticsDemandTotals:  make(map[string]analyticsAccumulator),
 		analyticsSupplyTotals:  make(map[int]analyticsAccumulator),
 		analyticsBundleTotals:  make(map[string]analyticsAccumulator),
+		metricsExportBuckets:   make(map[string]metricsExportBucket),
+		metricsExportDelivery:  make(map[string]metricsExportDeliveryContext),
 		budgetDayKey:           time.Now().UTC().Format("2006-01-02"),
 		frequencyByKey:         make(map[string]int),
 		dashboardUser:          "admin",
@@ -1433,7 +1437,7 @@ func NewRouterWithDeps(cfg *config.Config, metrics *monitor.Metrics, configPath 
 	}
 
 	// ─── VAST Event Tracking Callbacks ───
-	registerEventRoutes(app, metrics)
+	registerEventRoutes(app, s, metrics)
 
 	// ─── Auth: Login & Password Management ───
 	registerAuthRoutes(app, s)
@@ -1481,7 +1485,7 @@ func NewRouterWithDeps(cfg *config.Config, metrics *monitor.Metrics, configPath 
 
 // ── VAST Event Tracking Callbacks ──
 
-func registerEventRoutes(app *fiber.App, metrics *monitor.Metrics) {
+func registerEventRoutes(app *fiber.App, s *store, metrics *monitor.Metrics) {
 	evt := app.Group("/api/v1/event")
 
 	type vastEvent struct {
@@ -1514,10 +1518,15 @@ func registerEventRoutes(app *fiber.App, metrics *monitor.Metrics) {
 				handler.recorder()
 			}
 
+			bundleID := openrtb.CleanBundleValue(c.Query("bndl"), "", "")
+
 			if handler.eventType == "vast_impression" {
 				bidID := strings.TrimSpace(c.Query("bid"))
 				if bidID != "" {
 					auction.FireBillingNoticeByBidID(bidID)
+				}
+				if s != nil {
+					s.recordMetricsExportImpression(c.Query("rid"), c.Query("ctry"), bundleID)
 				}
 			}
 			var details string
@@ -1541,7 +1550,7 @@ func registerEventRoutes(app *fiber.App, metrics *monitor.Metrics) {
 				Country:   c.Query("ctry"),
 				IP:        c.Query("ip"),
 				Supply:    c.Query("sr"),
-				Bundle:    openrtb.CleanBundleValue(c.Query("bndl"), "", ""),
+				Bundle:    bundleID,
 				ADomain:   c.Query("adom"),
 				Price:     c.Query("price"),
 			})
@@ -2038,9 +2047,9 @@ func registerAnalyticsRoutes(app *fiber.App, s *store, metrics *monitor.Metrics)
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
 
-		response := buildMetricsExportResponse(metrics.SnapshotHourlyMetrics(), query)
+		response := buildMetricsExportResponse(s.snapshotMetricsExportBuckets(), query)
 		if strings.EqualFold(strings.TrimSpace(c.Query("format")), "csv") {
-			csvBody, csvErr := renderMetricsExportCSV(response.Rows)
+			csvBody, csvErr := renderMetricsExportCSV(response.Rows, response.GroupBy)
 			if csvErr != nil {
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": csvErr.Error()})
 			}
@@ -2867,6 +2876,7 @@ func handlePipelineServeResult(c *fiber.Ctx, p *pipeline.Pipeline, metrics *moni
 	}
 
 	if result.NoBid || result.Winner == nil || strings.TrimSpace(result.VAST) == "" {
+		s.recordMetricsExportRequestOutcome(req, auditSupplyID, 0, auditBundle, 0, 0, 0)
 		return c.Type("xml").SendString(vast.BuildNoAd())
 	}
 
@@ -2883,6 +2893,7 @@ func handlePipelineServeResult(c *fiber.Ctx, p *pipeline.Pipeline, metrics *moni
 			Bundle:    auditBundle,
 			ADomain:   winnerPrimaryDomain(result.Winner),
 		})
+		s.recordMetricsExportRequestOutcome(req, auditSupplyID, 0, auditBundle, 0, 0, 0)
 		return c.Type("xml").SendString(vast.BuildNoAd())
 	}
 
@@ -2898,6 +2909,15 @@ func handlePipelineServeResult(c *fiber.Ctx, p *pipeline.Pipeline, metrics *moni
 	metrics.RecordWin(result.WinPrice)
 	metrics.RecordSpend(result.Winner.ReportingPrice(result.WinPrice))
 	metrics.RecordGrossSpend(result.WinPrice)
+	s.recordMetricsExportRequestOutcome(
+		req,
+		auditSupplyID,
+		campaignID,
+		auditBundle,
+		1,
+		result.Winner.ReportingPrice(result.WinPrice)/1000.0,
+		result.WinPrice/1000.0,
+	)
 
 	s.recordAdDecision(req, result.Winner, result.WinPrice, auditSupplyID, auditSource, auditBundle, result.AdapterID, campaignID, campaignName, deliveryStatus)
 	p.FinalizeDelivery(result)
